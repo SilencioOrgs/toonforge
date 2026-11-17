@@ -103,9 +103,10 @@ export function applyVoiceFilesToBoard(board: BoardState, voiceFiles: string[]):
     if (!match) return card;
 
     const shouldQueue = board.autoQueue && card.lane === 'backlog';
+    const nextAudioMode: AudioMode = card.audioMode === 'no_vo' ? 'no_vo' : 'vo_ready';
     return {
       ...card,
-      audioMode: card.audioMode === 'no_vo' ? 'no_vo' : ('vo_ready' as const),
+      audioMode: nextAudioMode,
       voiceFile: match,
       lane: shouldQueue ? ('queued' as const) : card.lane,
       durationLabel: card.durationLabel.includes('MP4') ? card.durationLabel : 'VO Synced',
