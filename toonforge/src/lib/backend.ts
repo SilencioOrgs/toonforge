@@ -1,4 +1,4 @@
-import type { BoardState, CliEngine, EnvStatus, RigSummary } from './domain';
+import type { BoardState, CliEngine, EnvStatus, RigMode, RigSummary } from './domain';
 
 declare global {
   interface Window {
@@ -49,6 +49,14 @@ export async function saveBoard(board: BoardState): Promise<BoardState> {
   });
 }
 
+export async function createCard(title: string, rigMode: RigMode): Promise<BoardState> {
+  if (isTauriRuntime()) return tauriInvoke<BoardState>('create_card', { title, rigMode });
+  return httpJson<BoardState>('/api/cards', {
+    method: 'POST',
+    body: JSON.stringify({ title, rigMode }),
+  });
+}
+
 export async function syncRepo(): Promise<{ ok: boolean; lines: string[] }> {
   if (isTauriRuntime()) return tauriInvoke<{ ok: boolean; lines: string[] }>('sync_repo');
   return httpJson<{ ok: boolean; lines: string[] }>('/api/sync', { method: 'POST', body: '{}' });
@@ -84,4 +92,8 @@ export async function execCliCommand(
     method: 'POST',
     body: JSON.stringify({ engine, command }),
   });
+}
+
+export function mediaUrl(relPath: string): string {
+  return `/api/media?path=${encodeURIComponent(relPath)}`;
 }

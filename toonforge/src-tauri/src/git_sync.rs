@@ -11,6 +11,8 @@ pub struct EnvProbe {
     pub name: String,
     pub installed: bool,
     pub version: Option<String>,
+    pub role: String,
+    pub install_cmd: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,7 +29,7 @@ pub struct SyncResult {
     pub lines: Vec<String>,
 }
 
-fn probe_binary(id: &str, name: &str, bin: &str, args: &[&str]) -> EnvProbe {
+fn probe_binary(id: &str, name: &str, bin: &str, args: &[&str], role: &str, install_cmd: &str) -> EnvProbe {
     let out = Command::new(bin).args(args).output();
     match out {
         Ok(res) if res.status.success() => {
@@ -42,6 +44,8 @@ fn probe_binary(id: &str, name: &str, bin: &str, args: &[&str]) -> EnvProbe {
                 name: name.to_string(),
                 installed: true,
                 version,
+                role: role.to_string(),
+                install_cmd: install_cmd.to_string(),
             }
         }
         _ => EnvProbe {
@@ -49,28 +53,25 @@ fn probe_binary(id: &str, name: &str, bin: &str, args: &[&str]) -> EnvProbe {
             name: name.to_string(),
             installed: false,
             version: None,
+            role: role.to_string(),
+            install_cmd: install_cmd.to_string(),
         },
     }
 }
 
 #[tauri::command]
 pub fn check_environment(state: State<'_, WorkspaceState>) -> EnvStatus {
-    let specs = [
-        ("git", "Git", "git", ["--version"].as_slice()),
-        ("node", "Node.js", "node", ["-v"].as_slice()),
-        ("python", "Python", "python", ["--version"].as_slice()),
-        ("ffmpeg", "FFmpeg", "ffmpeg", ["-version"].as_slice()),
-        ("cargo", "Rust / Cargo", "cargo", ["--version"].as_slice()),
-        ("agy", "Antigravity CLI", "agy", ["--version"].as_slice()),
-        ("claude", "Claude Code CLI", "claude", ["--version"].as_slice()),
-        ("codex", "Codex CLI", "codex", ["--version"].as_slice()),
-        ("opencode", "OpenCode CLI", "opencode", ["--version"].as_slice()),
+    let probes = vec![
+        probe_binary("git", "Git", "git", &["--version"], "Clones & syncs your ToonForge template repository", "winget install Git.Git"),
+        probe_binary("node", "Node.js (>=20)", "node", &["-v"], "Bundles TypeScript & renders Three.js/Remotion scenes", "winget install OpenJS.NodeJS.LTS"),
+        probe_binary("python", "Python (>=3.10)", "python", &["--version"], "Executes VO sync, -15 LUFS DSP audio mix & frame QA", "winget install Python.Python.3.12"),
+        probe_binary("py_deps", "NumPy + Pillow", "python", &["-c", "import numpy, PIL; print('numpy+pillow OK')"], "Analyzes frame luma, black frames & contact sheets", "python -m pip install numpy pillow"),
+        probe_binary("ffmpeg", "FFmpeg + FFprobe", "ffmpeg", &["-version"], "Normalizes -15 LUFS audio & encodes/analyzes MP4 streams", "winget install Gyan.FFmpeg"),
+        probe_binary("agy", "Antigravity CLI", "agy", &["--version"], "Built-in IDE coding agent (no external API key needed)", "Bundled with Antigravity IDE"),
+        probe_binary("claude", "Claude Code CLI", "claude", &["--version"], "Anthropic CLI agent (requires Claude Pro/Max or API key)", "npm install -g @anthropic-ai/claude-code"),
+        probe_binary("codex", "Codex CLI", "codex", &["--version"], "OpenAI CLI agent (requires ChatGPT Plus/Pro or OPENAI_API_KEY)", "npm install -g @openai/codex"),
+        probe_binary("opencode", "OpenCode CLI", "opencode", &["--version"], "Open-source BYOK CLI agent (Gemini / OpenRouter / Ollama)", "npm install -g opencode-ai"),
     ];
-
-    let probes = specs
-        .iter()
-        .map(|(id, name, bin, args)| probe_binary(id, name, bin, args))
-        .collect();
 
     let branch = Command::new("git")
         .args(["branch", "--show-current"])

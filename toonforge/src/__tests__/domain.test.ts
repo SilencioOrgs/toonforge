@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   addCardToBoard,
+  AI_PROVIDER_GUIDES,
   applyVoiceFilesToBoard,
   buildAiSetupPrompt,
   buildManualSetupCommands,
+  buildVideoStepPrompt,
   setCardRig,
   toggleCardAudioMode,
   type BoardState,
@@ -107,17 +109,17 @@ describe('ToonForge domain Kanban & Auto-Queue state machine', () => {
 
   it('builds AI setup prompts and manual shell setup commands aware of missing toolchain probes', () => {
     const probes: EnvProbe[] = [
-      { id: 'git', name: 'Git', installed: true, version: '2.56.0' },
-      { id: 'node', name: 'Node.js', installed: true, version: 'v24.21.0' },
-      { id: 'python', name: 'Python', installed: true, version: '3.12' },
-      { id: 'ffmpeg', name: 'FFmpeg', installed: false },
-      { id: 'cargo', name: 'Rust / Cargo', installed: false },
+      { id: 'git', name: 'Git', installed: true, version: '2.56.0', role: 'Clone/sync template repository', installCmd: 'winget install Git.Git' },
+      { id: 'node', name: 'Node.js', installed: true, version: 'v24.21.0', role: 'Runs Remotion 4 + TypeScript render', installCmd: 'winget install OpenJS.NodeJS.LTS' },
+      { id: 'python', name: 'Python', installed: true, version: '3.12', role: 'Runs DSP audio mix & short_qa.py', installCmd: 'winget install Python.Python.3.12' },
+      { id: 'ffmpeg', name: 'FFmpeg', installed: false, role: 'Normalizes -15 LUFS audio & frame QA', installCmd: 'winget install Gyan.FFmpeg' },
+      { id: 'py_deps', name: 'NumPy + Pillow', installed: false, role: 'Powers scripts/short_qa.py frame stats', installCmd: 'python -m pip install numpy pillow' },
     ];
 
     const prompt = buildAiSetupPrompt('claude', probes);
     expect(prompt).toContain('claude');
     expect(prompt).toContain('ffmpeg');
-    expect(prompt).toContain('cargo');
+    expect(prompt).toContain('py_deps');
     expect(prompt).toContain('npm ci');
     expect(prompt).toContain('scripts/short_qa.py');
 
@@ -125,5 +127,21 @@ describe('ToonForge domain Kanban & Auto-Queue state machine', () => {
     expect(manual).toContain('git clone');
     expect(manual).toContain('pip install numpy pillow');
     expect(manual).toContain('remotion browser ensure');
+  });
+
+  it('provides clear AI CLI provider account guides and per-card video creation prompts', () => {
+    expect(AI_PROVIDER_GUIDES.claude.accountReq).toMatch(/Claude Pro/i);
+    expect(AI_PROVIDER_GUIDES.agy.accountReq).toMatch(/Built-in|Antigravity/i);
+    expect(AI_PROVIDER_GUIDES.codex.accountReq).toMatch(/ChatGPT/i);
+    expect(AI_PROVIDER_GUIDES.opencode.accountReq).toMatch(/Open-source|API key/i);
+
+    const card = sampleBoard().cards[1];
+    const audioPrompt = buildVideoStepPrompt('audio', card, 'claude');
+    expect(audioPrompt).toContain('audio/mix_dbindex.py');
+    expect(audioPrompt).toContain('-15 LUFS');
+
+    const renderPrompt = buildVideoStepPrompt('render', card, 'agy');
+    expect(renderPrompt).toContain('DbIndexShort');
+    expect(renderPrompt).toContain('scripts/short_qa.py');
   });
 });

@@ -46,20 +46,55 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('GET /api/env probes real installed tools (git, node, cargo, ffmpeg, AI CLIs)', async () => {
+  it('GET /api/env probes video creation tools with clear roles (git, node, python, py_deps, ffmpeg, AI CLIs)', async () => {
     const res = await fetch(`${realSrv.baseUrl}/api/env`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       repoRoot: string;
-      probes: Array<{ id: string; installed: boolean }>;
+      probes: Array<{ id: string; installed: boolean; role?: string }>;
     };
     expect(data.repoRoot).toBe(realRepoRoot);
     const git = data.probes.find((p) => p.id === 'git');
     const node = data.probes.find((p) => p.id === 'node');
+    const pyDeps = data.probes.find((p) => p.id === 'py_deps');
     expect(git?.installed).toBe(true);
     expect(node?.installed).toBe(true);
+    expect(pyDeps?.role).toMatch(/numpy|pillow|QA/i);
+    expect(data.probes.some((p) => p.id === 'chromium')).toBe(true);
     expect(data.probes.some((p) => p.id === 'agy')).toBe(true);
     expect(data.probes.some((p) => p.id === 'claude')).toBe(true);
+  });
+
+  it('GET /api/board against real repo enriches cards with actual QA loudness and video paths (zero dummy state)', async () => {
+    const res = await fetch(`${realSrv.baseUrl}/api/board`);
+    expect(res.status).toBe(200);
+    const board = (await res.json()) as { cards: Array<{ slug: string; loudness?: string; videoFile?: string; stills?: string[] }> };
+    const binary = board.cards.find((c) => c.slug === 'binary');
+    expect(binary).toBeDefined();
+    expect(binary?.videoFile).toContain('out/binary/');
+    expect(binary?.loudness).toContain('-15.1 LUFS');
+    expect(binary?.stills?.length).toBeGreaterThan(0);
+  });
+
+  it('POST /api/cards creates a real SCRIPT_<SLUG>.md and GET /api/media streams safe paths', async () => {
+    const createRes = await fetch(`${tmpSrv.baseUrl}/api/cards`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Cache Stampede', rigMode: 'stickman' }),
+    });
+    expect(createRes.status).toBe(200);
+    const updatedBoard = (await createRes.json()) as { cards: Array<{ slug: string; scriptFile?: string }> };
+    const created = updatedBoard.cards.find((c) => c.slug === 'cachestampede');
+    expect(created).toBeDefined();
+    const mdText = await fs.readFile(path.join(tmpDir, created!.scriptFile!), 'utf8');
+    expect(mdText).toContain('Cache Stampede');
+
+    const imgRes = await fetch(`${realSrv.baseUrl}/api/media?path=${encodeURIComponent('src/videos/chibi/sprites/idle.png')}`);
+    expect(imgRes.status).toBe(200);
+    expect(imgRes.headers.get('content-type')).toContain('image/png');
+
+    const badRes = await fetch(`${realSrv.baseUrl}/api/media?path=${encodeURIComponent('../package.json')}`);
+    expect(badRes.status).toBe(403);
   });
 
   it('GET /api/rigs inspects real chibi sprite directories cleanly', async () => {

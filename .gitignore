@@ -15,7 +15,7 @@ voice/*.wav
 audio/__pycache__/
 **/__pycache__/
 
-# Local editor & backup artifacts
-.toonforge/backups/
+# Local editor & runtime board state
+.toonforge/
 .DS_Store
 Thumbs.db

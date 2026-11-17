@@ -6,6 +6,7 @@ import {
   Check,
   Clock,
   Copy,
+  Film,
   GitBranch,
   ImagePlus,
   Layers,
@@ -24,9 +25,10 @@ import { LogoSvg } from './components/LogoSvg';
 import { StageSvg } from './components/StageSvg';
 import * as backend from './lib/backend';
 import {
-  addCardToBoard,
+  AI_PROVIDER_GUIDES,
   buildAiSetupPrompt,
   buildManualSetupCommands,
+  buildVideoStepPrompt,
   setCardRig,
   toggleCardAudioMode,
   type BoardState,
@@ -36,35 +38,15 @@ import {
   type LogoConcept,
   type RigMode,
   type RigSummary,
+  type VideoStep,
 } from './lib/domain';
 
-const FALLBACK_BOARD: BoardState = {
+const EMPTY_BOARD: BoardState = {
   version: 1,
   autoQueue: true,
   activeLane: 'queued',
-  selectedCardId: 'dbindex',
-  cards: [
-    {
-      id: 'async',
-      slug: 'async',
-      title: 'Async Job Queues',
-      lane: 'backlog',
-      audioMode: 'needs_vo',
-      rigMode: 'chibi',
-      durationLabel: 'Script Ready',
-      compositionId: 'AsyncShort',
-    },
-    {
-      id: 'dbindex',
-      slug: 'dbindex',
-      title: 'DbIndex (B-Tree)',
-      lane: 'queued',
-      audioMode: 'vo_ready',
-      rigMode: 'chibi',
-      durationLabel: '93.7s VO',
-      compositionId: 'DbIndexShort',
-    },
-  ],
+  selectedCardId: '',
+  cards: [],
 };
 
 const CLI_ENGINES: { label: string; cmd: CliEngine }[] = [
@@ -74,23 +56,27 @@ const CLI_ENGINES: { label: string; cmd: CliEngine }[] = [
   { label: 'OpenCode', cmd: 'opencode' },
 ];
 
+const VIDEO_REQ_IDS = new Set(['git', 'node', 'python', 'py_deps', 'ffmpeg', 'chromium']);
+
 export function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [activeLogo, setActiveLogo] = useState<LogoConcept>('cube');
-  const [board, setBoard] = useState<BoardState>(FALLBACK_BOARD);
+  const [board, setBoard] = useState<BoardState>(EMPTY_BOARD);
+  const [loadingBoard, setLoadingBoard] = useState(true);
   const [env, setEnv] = useState<EnvStatus | null>(null);
   const [rigs, setRigs] = useState<RigSummary | null>(null);
   const [syncLabel, setSyncLabel] = useState('Sync Repo');
+  const [newCardTitle, setNewCardTitle] = useState('');
+  const [stageView, setStageView] = useState<'rig' | 'video' | 'stills'>('rig');
   const [activeCli, setActiveCli] = useState<CliEngine>('agy');
   const [cliInput, setCliInput] = useState('');
   const [cliLogs, setCliLogs] = useState<string[]>([
-    'portable-pty ready · watching Content Bank & character rig',
-    'agy > workspace bridge online',
+    'workspace bridge online · scanning real SCRIPT_*.md, voice/, and out/',
   ]);
-  const [renderPct, setRenderPct] = useState(68);
+  const [renderPct, setRenderPct] = useState<number | null>(null);
   const [qaStatus, setQaStatus] = useState<'QA Next' | 'QA Pass'>('QA Next');
   const [setupTab, setSetupTab] = useState<'ai' | 'manual' | 'walk'>('ai');
-  const [copiedKey, setCopiedKey] = useState<'ai' | 'manual' | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const logoDialogRef = useRef<HTMLDialogElement>(null);
   const setupDialogRef = useRef<HTMLDialogElement>(null);
@@ -103,9 +89,10 @@ export function App() {
         setEnv(envRes);
         setRigs(rigRes);
         setBoard(boardRes);
+        setLoadingBoard(false);
       })
       .catch(() => {
-        // Keep responsive fallback state when bridge is temporarily unavailable.
+        if (active) setLoadingBoard(false);
       });
     return () => {
       active = false;
@@ -137,11 +124,15 @@ export function App() {
   );
 
   const probes = env?.probes ?? [];
+  const videoReqs = useMemo(() => probes.filter((p) => VIDEO_REQ_IDS.has(p.id)), [probes]);
+  const activeCliProbe = useMemo(() => probes.find((p) => p.id === activeCli), [probes, activeCli]);
+  const activeAiGuide = AI_PROVIDER_GUIDES[activeCli];
+
   const aiSetupPrompt = useMemo(() => buildAiSetupPrompt(activeCli, probes), [activeCli, probes]);
   const manualCommands = useMemo(() => buildManualSetupCommands(probes), [probes]);
 
   const appendLog = (line: string) => {
-    setCliLogs((prev) => [...prev.slice(-18), line]);
+    setCliLogs((prev) => [...prev.slice(-24), line]);
   };
 
   const handleSync = async () => {
@@ -151,14 +142,23 @@ export function App() {
     res.lines.forEach((l) => appendLog(`git > ${l}`));
   };
 
+  const handleCreateCard = async () => {
+    const title = newCardTitle.trim() || `Short ${board.cards.length + 1}`;
+    setNewCardTitle('');
+    const next = await backend.createCard(title, selectedCard?.rigMode ?? 'chibi');
+    setBoard(next);
+    appendLog(`board > created card "${title}" + SCRIPT_${title.replace(/[^a-zA-Z0-9]+/g, '').toUpperCase()}.md`);
+  };
+
   const handleRigChange = (rig: RigMode) => {
     if (!selectedCard) return;
     persistBoard(setCardRig(board, selectedCard.id, rig));
-    appendLog(`${activeCli} > switched to ${rig === 'stickman' ? 'Built-in Stickman rig' : 'Custom Chibi sprite sheet'}`);
+    appendLog(`${activeCli} > ${selectedCard.slug} rig set to ${rig === 'stickman' ? 'Built-in Stickman rig' : 'Custom Chibi sprite sheet'}`);
   };
 
   const handleStills = async () => {
     if (!selectedCard) return;
+    setStageView('stills');
     const res = await backend.runPipeline(selectedCard.slug, 'stills');
     res.lines.forEach((l) => appendLog(`stills > ${l}`));
   };
@@ -170,12 +170,14 @@ export function App() {
     const res = await backend.runPipeline(selectedCard.slug, 'render');
     setRenderPct(100);
     setQaStatus(res.ok ? 'QA Pass' : 'QA Next');
-    res.lines.forEach((l) => appendLog(`render > ${l}`));
+    res.lines.forEach((l) => appendLog(`pipeline > ${l}`));
   };
 
-  const handleMacro = (macro: string) => {
-    const context = selectedCard ? ` [${selectedCard.slug} · ${selectedCard.rigMode}]` : '';
-    appendLog(`${activeCli} > "${macro}${context}"`);
+  const handleGuidedStep = (step: VideoStep) => {
+    if (!selectedCard) return;
+    const prompt = buildVideoStepPrompt(step, selectedCard, activeCli);
+    setCliInput(prompt);
+    appendLog(prompt);
   };
 
   const handleCliSubmit = async (e: React.FormEvent) => {
@@ -189,10 +191,14 @@ export function App() {
     if (res.stderr.trim()) appendLog(`stderr: ${res.stderr.trim()}`);
   };
 
-  const handleCopy = (kind: 'ai' | 'manual', text: string) => {
+  const handleCopy = (key: string, text: string) => {
     navigator.clipboard?.writeText(text);
-    setCopiedKey(kind);
+    setCopiedKey(key);
   };
+
+  const effectivePct =
+    renderPct !== null ? renderPct : selectedCard?.lane === 'done' ? 100 : selectedCard?.voiceFile ? 68 : 25;
+  const effectiveQa = selectedCard?.qaReport ? 'QA Pass' : qaStatus;
 
   return (
     <div id="studio-frame" data-mode={theme}>
@@ -222,7 +228,10 @@ export function App() {
               onClick={() => setActiveLogo(logo)}
               className={`tf-tab ql-press ${activeLogo === logo ? 'is-active' : ''}`}
             >
-              {logo.charAt(0).toUpperCase() + logo.slice(1)}
+              <span className="tf-logo-mini">
+                <LogoSvg concept={logo} />
+              </span>
+              <span>{logo.charAt(0).toUpperCase() + logo.slice(1)}</span>
             </button>
           ))}
           <button
@@ -244,11 +253,7 @@ export function App() {
             <BookOpen size={14} style={{ color: 'var(--g-prio)' }} />
             <span>Setup Guide</span>
           </button>
-          <button
-            type="button"
-            onClick={handleSync}
-            className="ql-surface ql-clear ql-press tf-btn"
-          >
+          <button type="button" onClick={handleSync} className="ql-surface ql-clear ql-press tf-btn">
             <GitBranch size={14} />
             <span>{syncLabel}</span>
           </button>
@@ -265,7 +270,7 @@ export function App() {
 
       {/* Main 3-Pane Studio Workbench */}
       <div className="tf-grid">
-        {/* LEFT PANE: Trello Content Bank + Auto-Queue */}
+        {/* LEFT PANE: Real Workspace Content Bank + Auto-Queue */}
         <section
           data-ql-material="regular"
           data-ql-blur={MATERIAL_PRESETS.regular?.blur ?? 20}
@@ -308,6 +313,16 @@ export function App() {
             </div>
 
             <div className="kanban-list">
+              {loadingBoard && (
+                <div className="text-sec" style={{ padding: 12, fontSize: 12 }}>
+                  Scanning workspace shorts &amp; QA reports...
+                </div>
+              )}
+              {!loadingBoard && visibleCards.length === 0 && (
+                <div className="text-sec" style={{ padding: 12, fontSize: 12 }}>
+                  No cards in {board.activeLane}. Add a new short below or toggle a card badge.
+                </div>
+              )}
               {visibleCards.map((card) => {
                 const isSelected = card.id === selectedCard?.id;
                 const badgeStyle =
@@ -320,7 +335,10 @@ export function App() {
                 return (
                   <div
                     key={card.id}
-                    onClick={() => persistBoard({ ...board, selectedCardId: card.id })}
+                    onClick={() => {
+                      setRenderPct(null);
+                      persistBoard({ ...board, selectedCardId: card.id });
+                    }}
                     className={`kanban-row ${isSelected ? 'is-selected' : ''}`}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -334,8 +352,7 @@ export function App() {
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const next = toggleCardAudioMode(board, card.id);
-                          persistBoard(next);
+                          persistBoard(toggleCardAudioMode(board, card.id));
                         }}
                         className="tf-badge ql-press"
                         style={{ ...badgeStyle, cursor: 'pointer' }}
@@ -344,7 +361,7 @@ export function App() {
                         <span>{badgeText}</span>
                       </button>
                       <span className="text-sec tabular" style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                        {card.durationLabel}
+                        {card.loudness || card.durationLabel}
                       </span>
                     </div>
                   </div>
@@ -353,23 +370,23 @@ export function App() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, borderTop: '1px solid var(--g-divider)', fontSize: 12 }}>
-            <span className="text-sec" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <ArrowRight size={13} />
-              <span>Tap badge: VO / No-VO</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => persistBoard(addCardToBoard(board, `New Short #${board.cards.length + 1}`, selectedCard?.rigMode ?? 'chibi'))}
-              className="ql-surface ql-thin ql-press tf-btn"
-            >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 10, borderTop: '1px solid var(--g-divider)' }}>
+            <input
+              type="text"
+              value={newCardTitle}
+              onChange={(e) => setNewCardTitle(e.target.value)}
+              placeholder="New short title..."
+              className="cli-input"
+              style={{ padding: '6px 10px' }}
+            />
+            <button type="button" onClick={handleCreateCard} className="ql-surface ql-thin ql-press tf-btn">
               <Plus size={13} />
               <span>Add Card</span>
             </button>
           </div>
         </section>
 
-        {/* CENTER PANE: Character Rig Switcher + 9:16 Stage Preview */}
+        {/* CENTER PANE: Character Rig Switcher + Real Stage / Video / Stills Viewer */}
         <section
           data-ql-material="regular"
           data-ql-blur={MATERIAL_PRESETS.regular?.blur ?? 20}
@@ -385,6 +402,33 @@ export function App() {
           </div>
 
           <div className="tf-tab-strip">
+            <button
+              type="button"
+              onClick={() => setStageView('rig')}
+              className={`tf-tab ql-press ${stageView === 'rig' ? 'is-active' : ''}`}
+            >
+              <Sparkles size={13} />
+              <span>Rig</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStageView('video')}
+              className={`tf-tab ql-press ${stageView === 'video' ? 'is-active' : ''}`}
+            >
+              <Film size={13} />
+              <span>Video</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStageView('stills')}
+              className={`tf-tab ql-press ${stageView === 'stills' ? 'is-active' : ''}`}
+            >
+              <Camera size={13} />
+              <span>Stills</span>
+            </button>
+          </div>
+
+          <div className="tf-tab-strip" style={{ borderBottom: 'none', paddingBottom: 0 }}>
             <button
               type="button"
               onClick={() => handleRigChange('stickman')}
@@ -406,7 +450,7 @@ export function App() {
           <div className="stage-canvas">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
               <span className="tf-badge" style={{ background: '#ffffff', color: '#09090b', border: '2px solid #09090b' }}>
-                {selectedCard?.compositionId ?? 'Stage'}
+                {selectedCard?.compositionId ?? 'Workspace'}
               </span>
               <span
                 className="tf-badge"
@@ -419,27 +463,59 @@ export function App() {
               </span>
             </div>
 
-            <StageSvg rigMode={selectedCard?.rigMode ?? 'chibi'} />
+            {stageView === 'rig' && <StageSvg rigMode={selectedCard?.rigMode ?? 'chibi'} />}
+
+            {stageView === 'video' &&
+              (selectedCard?.videoFile ? (
+                <video
+                  controls
+                  playsInline
+                  src={backend.mediaUrl(selectedCard.videoFile)}
+                  className="stage-video"
+                />
+              ) : (
+                <div style={{ fontSize: 12, color: '#d4d4d8', textAlign: 'center', padding: '24px 8px' }}>
+                  No rendered MP4 yet for {selectedCard?.slug ?? 'this card'}. Use Step 4 or click Render.
+                </div>
+              ))}
+
+            {stageView === 'stills' &&
+              (selectedCard?.stills && selectedCard.stills.length > 0 ? (
+                <div className="stills-grid">
+                  {selectedCard.stills.map((imgPath) => (
+                    <img
+                      key={imgPath}
+                      src={backend.mediaUrl(imgPath)}
+                      alt={imgPath}
+                      className="still-thumb"
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: '#d4d4d8', textAlign: 'center', padding: '24px 8px' }}>
+                  No stills found in out/{selectedCard?.slug ?? ''}/stills yet.
+                </div>
+              ))}
 
             <div className="stage-actions">
               <button type="button" onClick={handleStills} className="pill-light ql-press">
                 <Camera size={13} />
-                <span>Stills</span>
+                <span>Check Stills</span>
               </button>
               <button type="button" onClick={handleRender} className="pill-prio ql-press">
                 <Play size={13} />
-                <span>Render</span>
+                <span>Run QA</span>
               </button>
             </div>
           </div>
 
           <div className="text-sec tabular" style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
-            <span>{rigs ? `Chibi assets: ${rigs.chibi.sprites} sprites · ${rigs.chibi.faces} faces` : 'Loading workspace rigs...'}</span>
+            <span>{rigs ? `Chibi: ${rigs.chibi.sprites} sprites · ${rigs.chibi.faces} faces` : 'Inspecting rigs...'}</span>
             <span>{env?.branch ? `git:${env.branch}` : 'git:main'}</span>
           </div>
         </section>
 
-        {/* RIGHT PANE: Render Pipeline + Built-In Multi-AI CLI */}
+        {/* RIGHT PANE: Real Pipeline Telemetry + Easy AI CLI Hub */}
         <section
           data-ql-material="thick"
           data-ql-blur={MATERIAL_PRESETS.thick?.blur ?? 28}
@@ -452,33 +528,33 @@ export function App() {
                 <span>Render Pipeline</span>
               </h2>
               <span className="tabular" style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600, color: 'var(--g-prio)' }}>
-                {selectedCard?.title.split(' ')[0]} · {renderPct}%
+                {selectedCard?.loudness || `${effectivePct}%`}
               </span>
             </div>
 
             <div className="pipe-grid tabular">
               <div className="pipe-step text-sec" style={{ background: 'var(--g-sub)' }}>
-                {selectedCard?.audioMode === 'no_vo' ? 'Visual Beat' : 'VO Sync'}
+                {selectedCard?.audioMode === 'no_vo' ? 'Visual Beat' : selectedCard?.voiceFile ? 'VO Found' : 'VO Wait'}
               </div>
               <div className="pipe-step text-sec" style={{ background: 'var(--g-sub)' }}>
-                {selectedCard?.audioMode === 'no_vo' ? 'Suno BGM' : '-15 LUFS'}
+                {selectedCard?.loudness || (selectedCard?.mixScript ? 'DSP Mix' : 'Mix Wait')}
               </div>
               <div className="pipe-step" style={{ background: 'var(--g-prio-bg)', color: 'var(--g-prio)' }}>
-                {renderPct < 100 ? `2K ${renderPct}%` : '2K Done'}
+                {selectedCard?.videoFile ? '2K MP4' : `2K ${effectivePct}%`}
               </div>
               <div
                 className="pipe-step"
                 style={{
-                  background: qaStatus === 'QA Pass' ? 'var(--g-prio-bg)' : 'var(--g-sub)',
-                  color: qaStatus === 'QA Pass' ? 'var(--g-prio)' : 'var(--g-sec)',
+                  background: effectiveQa === 'QA Pass' ? 'var(--g-prio-bg)' : 'var(--g-sub)',
+                  color: effectiveQa === 'QA Pass' ? 'var(--g-prio)' : 'var(--g-sec)',
                 }}
               >
-                {qaStatus}
+                {effectiveQa}
               </div>
             </div>
 
             <div className="progress-track">
-              <div style={{ height: '100%', width: `${renderPct}%`, borderRadius: 9999, background: '#10b981', transition: 'width 0.3s ease' }} />
+              <div style={{ height: '100%', width: `${effectivePct}%`, borderRadius: 9999, background: '#10b981', transition: 'width 0.3s ease' }} />
             </div>
           </div>
 
@@ -492,7 +568,7 @@ export function App() {
                     type="button"
                     onClick={() => {
                       setActiveCli(engine.cmd);
-                      appendLog(`${engine.cmd} > attached · workspace ready`);
+                      appendLog(`${engine.cmd} > selected (${AI_PROVIDER_GUIDES[engine.cmd].accountReq})`);
                     }}
                     className={`tf-tab ql-press ${activeCli === engine.cmd ? 'is-active' : ''}`}
                   >
@@ -502,6 +578,33 @@ export function App() {
               </div>
             </div>
 
+            {/* Clear Account / Install Explainer for Non-Technical Creators */}
+            <div className="ai-guide-bar">
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>{activeAiGuide.accountReq}</div>
+                <div className="text-sec" style={{ fontSize: 12 }}>{activeAiGuide.summary}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!activeCliProbe?.installed) {
+                    setCliInput(activeAiGuide.installCmd);
+                    handleCopy('cli-install', activeAiGuide.installCmd);
+                  } else {
+                    handleCopy('cli-login', activeAiGuide.loginCmd);
+                  }
+                }}
+                className="tf-badge ql-press shrink-0"
+                style={{
+                  background: activeCliProbe?.installed ? 'var(--g-prio-bg)' : 'var(--g-sub)',
+                  color: activeCliProbe?.installed ? 'var(--g-prio)' : 'inherit',
+                  cursor: 'pointer',
+                }}
+              >
+                <span>{activeCliProbe?.installed ? 'Ready on PATH' : 'Copy Install Cmd'}</span>
+              </button>
+            </div>
+
             <pre className="cli-log tabular">{cliLogs.join('\n')}</pre>
 
             <form onSubmit={handleCliSubmit} className="cli-input-row">
@@ -509,7 +612,7 @@ export function App() {
                 type="text"
                 value={cliInput}
                 onChange={(e) => setCliInput(e.target.value)}
-                placeholder={`Run shell / ${activeCli} command in repo...`}
+                placeholder={`Type command or click a Video Step below (${activeCli})...`}
                 className="cli-input"
               />
               <button type="submit" className="tf-btn tf-btn-mono ql-press">
@@ -517,22 +620,25 @@ export function App() {
               </button>
             </form>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button type="button" onClick={() => handleMacro('Build from active Trello card')} className="ql-press tf-btn tf-btn-mono">
-                + Build Card
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 }}>
+              <button type="button" onClick={() => handleGuidedStep('script')} className="ql-press tf-btn tf-btn-mono">
+                1. Script
               </button>
-              <button type="button" onClick={() => handleMacro('Switch character rig & align FX')} className="ql-press tf-btn tf-btn-mono">
-                Align Rig
+              <button type="button" onClick={() => handleGuidedStep('audio')} className="ql-press tf-btn tf-btn-mono">
+                2. Audio Mix
               </button>
-              <button type="button" onClick={() => handleMacro('Generate FB captions')} className="ql-press tf-btn tf-btn-mono">
-                FB Caption
+              <button type="button" onClick={() => handleGuidedStep('scene')} className="ql-press tf-btn tf-btn-mono">
+                3. 3D Scene
+              </button>
+              <button type="button" onClick={() => handleGuidedStep('render')} className="ql-press tf-btn tf-btn-prio">
+                4. Render QA
               </button>
             </div>
           </div>
         </section>
       </div>
 
-      {/* Logo Comparison Dialog */}
+      {/* Choose ToonForge Icon Dialog with Live Context Samples */}
       <dialog ref={logoDialogRef} className="tf-dialog">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <h3 className="font-display" style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>
@@ -547,6 +653,7 @@ export function App() {
             Apply Icon
           </button>
         </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
           {(
             [
@@ -558,13 +665,10 @@ export function App() {
             <button
               key={item.id}
               type="button"
-              onClick={() => {
-                setActiveLogo(item.id);
-                logoDialogRef.current?.close();
-              }}
-              className="pick-logo ql-press"
+              onClick={() => setActiveLogo(item.id)}
+              className={`pick-logo ql-press ${activeLogo === item.id ? 'is-active' : ''}`}
             >
-              <div style={{ width: 56, height: 56, margin: '0 auto 8px auto' }}>
+              <div style={{ width: 52, height: 52, margin: '0 auto 8px auto' }}>
                 <LogoSvg concept={item.id} />
               </div>
               <div className="font-display" style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
@@ -574,13 +678,42 @@ export function App() {
             </button>
           ))}
         </div>
+
+        <div className="sample-strip">
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#fafafa' }}>Live Icon Sample</div>
+          <div className="sample-row">
+            <div className="sample-item">
+              <div className="sample-dock-squircle">
+                <LogoSvg concept={activeLogo} />
+              </div>
+              <span style={{ fontSize: 12, color: '#d4d4d8' }}>App Dock</span>
+            </div>
+            <div className="sample-item">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
+                <span style={{ width: 18, height: 18, display: 'inline-block' }}>
+                  <LogoSvg concept={activeLogo} />
+                </span>
+                <span className="font-display" style={{ fontSize: 12, fontWeight: 700 }}>ToonForge</span>
+              </div>
+              <span style={{ fontSize: 12, color: '#d4d4d8' }}>Window Titlebar</span>
+            </div>
+            <div className="sample-item">
+              <div style={{ width: 34, height: 48, border: '1px solid rgba(255,255,255,0.35)', borderRadius: 4, position: 'relative', background: '#18181b' }}>
+                <span style={{ position: 'absolute', bottom: 4, right: 4, width: 14, height: 14 }}>
+                  <LogoSvg concept={activeLogo} />
+                </span>
+              </div>
+              <span style={{ fontSize: 12, color: '#d4d4d8' }}>9:16 Short</span>
+            </div>
+          </div>
+        </div>
       </dialog>
 
-      {/* First-Run Setup Wizard & 3-Step Walkthrough Dialog */}
+      {/* Video Creation Setup Guide & Walkthrough Dialog */}
       <dialog ref={setupDialogRef} className="tf-dialog">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <h3 className="font-display" style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>
-            First-Run Setup &amp; Walkthrough
+            Video Creation Stack — Needed to Create Videos
           </h3>
           <button
             type="button"
@@ -592,18 +725,26 @@ export function App() {
           </button>
         </div>
 
-        <div className="probe-strip">
-          {probes.map((p) => (
-            <span
-              key={p.id}
-              className="tf-badge tabular"
-              style={{
-                background: p.installed ? 'rgba(16,185,129,0.18)' : 'rgba(255,255,255,0.08)',
-                color: p.installed ? '#34d399' : '#d4d4d8',
-              }}
-            >
-              {p.name}: {p.installed ? 'OK' : 'Missing'}
-            </span>
+        <div className="req-list">
+          {videoReqs.map((p) => (
+            <div key={p.id} className="req-row">
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>{p.name}</div>
+                <div style={{ fontSize: 12, color: '#d4d4d8' }}>{p.role}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => p.installCmd && handleCopy(`req-${p.id}`, p.installCmd)}
+                className="tf-badge tabular ql-press shrink-0"
+                style={{
+                  background: p.installed ? 'rgba(16,185,129,0.20)' : 'rgba(255,255,255,0.10)',
+                  color: p.installed ? '#34d399' : '#fafafa',
+                  cursor: 'pointer',
+                }}
+              >
+                <span>{p.installed ? 'OK' : copiedKey === `req-${p.id}` ? 'Copied' : 'Copy Install'}</span>
+              </button>
+            </div>
           ))}
         </div>
 
@@ -627,13 +768,13 @@ export function App() {
             onClick={() => setSetupTab('walk')}
             className={`tf-tab ql-press ${setupTab === 'walk' ? 'is-active' : ''}`}
           >
-            Quick Walkthrough
+            How Videos Are Made
           </button>
         </div>
 
         {setupTab === 'ai' && (
           <div>
-            <pre className="cli-log" style={{ height: 112, marginBottom: 12, border: '1px solid rgba(255,255,255,0.16)' }}>
+            <pre className="cli-log" style={{ height: 108, marginBottom: 12, border: '1px solid rgba(255,255,255,0.16)' }}>
               {aiSetupPrompt}
             </pre>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -650,12 +791,13 @@ export function App() {
                 type="button"
                 onClick={() => {
                   setupDialogRef.current?.close();
-                  appendLog(`${activeCli} > running onboarding prompt for missing dependencies...`);
+                  setCliInput(aiSetupPrompt);
+                  appendLog(`${activeCli} > loaded video-stack setup prompt`);
                 }}
                 className="ql-press tf-btn tf-btn-prio"
               >
-                <Play size={14} />
-                <span>Run Prompt in {activeCli}</span>
+                <ArrowRight size={14} />
+                <span>Load into {activeCli}</span>
               </button>
             </div>
           </div>
@@ -663,7 +805,7 @@ export function App() {
 
         {setupTab === 'manual' && (
           <div>
-            <pre className="cli-log tabular" style={{ height: 112, marginBottom: 12, border: '1px solid rgba(255,255,255,0.16)' }}>
+            <pre className="cli-log tabular" style={{ height: 108, marginBottom: 12, border: '1px solid rgba(255,255,255,0.16)' }}>
               {manualCommands}
             </pre>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -678,14 +820,15 @@ export function App() {
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   setupDialogRef.current?.close();
-                  appendLog('$ npm ci && python -m pip install numpy pillow && ffmpeg -version');
+                  const res = await backend.execCliCommand('shell', 'node -v && python --version && ffmpeg -version');
+                  appendLog(res.stdout || res.stderr || 'preflight checked');
                 }}
                 className="ql-press tf-btn tf-btn-prio"
               >
                 <Terminal size={14} />
-                <span>Run Preflight in PTY</span>
+                <span>Verify Video Stack Now</span>
               </button>
             </div>
           </div>
@@ -696,22 +839,22 @@ export function App() {
             <div className="walk-row">
               <span className="tf-badge tabular" style={{ background: '#047857', color: '#ffffff' }}>1</span>
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>Sync Template Repo &amp; Toolchain</div>
-                <div style={{ fontSize: 12, color: '#d4d4d8' }}>Pull Remotion + Python scripts and verify FFmpeg &amp; Chromium.</div>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>Write Script (`SCRIPT_*.md`) + Optional Voiceover (`voice/*.wav`)</div>
+                <div style={{ fontSize: 12, color: '#d4d4d8' }}>Drop VO to auto-queue, or toggle badge to No-VO Mode for visual-only beats.</div>
               </div>
             </div>
             <div className="walk-row">
               <span className="tf-badge tabular" style={{ background: '#27272a', color: '#fafafa' }}>2</span>
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>Configure Card, Rig &amp; VO / No-VO Mode</div>
-                <div style={{ fontSize: 12, color: '#d4d4d8' }}>Pick Stickman or Chibi Sheet and tap the badge to queue renders.</div>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>Audio DSP (`python audio/mix_&lt;slug&gt;.py`) + Scene (`src/videos/&lt;slug&gt;/`)</div>
+                <div style={{ fontSize: 12, color: '#d4d4d8' }}>Use AI CLI Steps 2–3 with Stickman or Chibi sprites to sync shots and -15 LUFS mix.</div>
               </div>
             </div>
             <div className="walk-row">
               <span className="tf-badge tabular" style={{ background: '#27272a', color: '#fafafa' }}>3</span>
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>Auto-Queue 2K Render &amp; Short QA</div>
-                <div style={{ fontSize: 12, color: '#d4d4d8' }}>Watch live -15 LUFS audio mix, 1440×2560 render, and QA checks.</div>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>Render 2K MP4 (`remotion render`) + Frame QA (`scripts/short_qa.py`)</div>
+                <div style={{ fontSize: 12, color: '#d4d4d8' }}>Preview the finished MP4 and QA contact sheets right inside Stage Preview.</div>
               </div>
             </div>
           </div>

@@ -3,6 +3,7 @@ export type AudioMode = 'needs_vo' | 'vo_ready' | 'no_vo';
 export type RigMode = 'stickman' | 'chibi';
 export type CliEngine = 'agy' | 'claude' | 'codex' | 'opencode';
 export type LogoConcept = 'cube' | 'clapper' | 'portal';
+export type VideoStep = 'script' | 'audio' | 'scene' | 'render';
 
 export interface CardItem {
   id: string;
@@ -14,6 +15,13 @@ export interface CardItem {
   durationLabel: string;
   compositionId: string;
   voiceFile?: string;
+  scriptFile?: string;
+  mixScript?: string;
+  videoFile?: string;
+  qaReport?: string;
+  stills?: string[];
+  loudness?: string;
+  specs?: string;
 }
 
 export interface BoardState {
@@ -29,6 +37,8 @@ export interface EnvProbe {
   name: string;
   installed: boolean;
   version?: string;
+  role?: string;
+  installCmd?: string;
 }
 
 export interface EnvStatus {
@@ -41,6 +51,50 @@ export interface RigSummary {
   stickman: { ready: boolean; label: string };
   chibi: { ready: boolean; sprites: number; faces: number; fx: number };
 }
+
+export interface AiProviderGuide {
+  id: CliEngine;
+  title: string;
+  accountReq: string;
+  summary: string;
+  installCmd: string;
+  loginCmd: string;
+}
+
+export const AI_PROVIDER_GUIDES: Record<CliEngine, AiProviderGuide> = {
+  agy: {
+    id: 'agy',
+    title: 'Antigravity AI CLI (Built-In Default)',
+    accountReq: 'Built-in with Antigravity IDE (no separate API billing needed)',
+    summary: 'Runs directly inside your workspace to write SCRIPT_*.md, Remotion scenes, and Python audio mixes.',
+    installCmd: 'Bundled with Antigravity IDE (agy on PATH)',
+    loginCmd: 'agy',
+  },
+  claude: {
+    id: 'claude',
+    title: 'Claude Code CLI',
+    accountReq: 'Requires Claude Pro / Max account or Anthropic API key',
+    summary: 'Anthropic coding agent in terminal; ideal if you already subscribe to Claude Pro/Max.',
+    installCmd: 'npm install -g @anthropic-ai/claude-code',
+    loginCmd: 'claude (sign in via browser on first run)',
+  },
+  codex: {
+    id: 'codex',
+    title: 'OpenAI Codex CLI',
+    accountReq: 'Requires ChatGPT Plus / Pro account or OPENAI_API_KEY',
+    summary: 'OpenAI terminal coding agent for editing Three.js scenes, storybeats, and captions.',
+    installCmd: 'npm install -g @openai/codex',
+    loginCmd: 'codex --login',
+  },
+  opencode: {
+    id: 'opencode',
+    title: 'OpenCode CLI',
+    accountReq: 'Open-source BYOK (works with API keys or local Ollama models)',
+    summary: 'Provider-agnostic open-source coding agent supporting Anthropic, Gemini, OpenRouter, or local models.',
+    installCmd: 'npm install -g opencode-ai',
+    loginCmd: 'opencode auth login',
+  },
+};
 
 const AUDIO_CYCLE: Record<AudioMode, AudioMode> = {
   needs_vo: 'vo_ready',
@@ -147,30 +201,52 @@ export function setCardRig(board: BoardState, cardId: string, rigMode: RigMode):
   };
 }
 
-/** Generates an onboarding setup prompt for the user's chosen AI CLI agent. */
+/** Generates an onboarding setup prompt specifically for the video creation stack. */
 export function buildAiSetupPrompt(cliCmd: CliEngine, probes: EnvProbe[]): string {
-  const missing = probes.filter((p) => !p.installed && p.id !== 'agy' && p.id !== 'claude' && p.id !== 'codex' && p.id !== 'opencode');
-  const missingList = missing.length > 0 ? missing.map((m) => m.id).join(', ') : 'none missing (verify versions)';
+  const missing = probes.filter(
+    (p) => !p.installed && !['agy', 'claude', 'codex', 'opencode', 'cargo'].includes(p.id),
+  );
+  const missingList = missing.length > 0 ? missing.map((m) => m.id).join(', ') : 'none missing';
   return [
-    `[${cliCmd} setup] Prepare this ToonForge workspace for rendering vertical 2D-in-3D shorts:`,
-    `1. Check required runtimes (git, node >=20, python >=3.10, ffmpeg, Chromium) and optional Rust/Cargo. Missing right now: ${missingList}. Install any missing tools for my OS.`,
-    `2. Run \`npm ci\` in the repo root and \`npx remotion browser ensure\`.`,
-    `3. Install Python audio/QA packages (\`python -m pip install numpy pillow\`) and verify \`python scripts/short_qa.py --help\`.`,
-    `4. Confirm \`.toonforge/board.json\` is ready and summarize what was installed.`,
+    `[${cliCmd} video-stack setup] Set up this repository to create 2D-in-3D vertical videos:`,
+    `1. Verify required video tools: git, node (>=20 for Remotion 4), python (>=3.10 for audio DSP/QA), py_deps (numpy + pillow), ffmpeg/ffprobe, and Chromium. Missing: ${missingList}.`,
+    `2. Install JS & Chromium deps: run \`npm ci\` and \`npx remotion browser ensure\`.`,
+    `3. Install Python DSP & QA libs: run \`python -m pip install numpy pillow\` and confirm \`python scripts/short_qa.py --help\` works.`,
+    `4. Verify \`src/Root.tsx\` typechecks (\`npm run typecheck\`) and summarize readiness to render.`,
   ].join('\n');
 }
 
-/** Generates copyable terminal setup commands for manual onboarding. */
+/** Generates copyable manual shell commands for setting up the video creation stack. */
 export function buildManualSetupCommands(probes: EnvProbe[]): string {
-  const missingCargo = probes.some((p) => p.id === 'cargo' && !p.installed);
   const missingFfmpeg = probes.some((p) => p.id === 'ffmpeg' && !p.installed);
+  const missingPy = probes.some((p) => (p.id === 'python' || p.id === 'py_deps') && !p.installed);
   const lines = [
+    '# 1. Clone repo & install Remotion + Three.js + React packages',
     'git clone https://github.com/SilencioOrgs/toonforge-template.git && cd toonforge-template',
-    'npm ci && npx remotion browser ensure',
+    'npm ci && npx remotion browser ensure && npm run typecheck',
+    '# 2. Install Python libs for -15 LUFS audio mastering & frame QA',
     'python -m pip install numpy pillow',
   ];
-  if (missingFfmpeg) lines.push('# Install FFmpeg first: winget install Gyan.FFmpeg  (or brew install ffmpeg)');
-  if (missingCargo) lines.push('# Optional for native Tauri build: winget install Rustlang.Rustup');
-  lines.push('ffmpeg -version && python scripts/short_qa.py --help');
+  if (missingFfmpeg) lines.push('# Install FFmpeg (required by audio/dsp.py & short_qa.py): winget install Gyan.FFmpeg');
+  if (missingPy) lines.push('# Install Python 3.10+ if missing: winget install Python.Python.3.12');
+  lines.push('# 3. Verify video render prerequisites', 'ffmpeg -version && python scripts/short_qa.py --help');
   return lines.join('\n');
+}
+
+/** Builds a clear, step-by-step AI CLI prompt tied directly to a card's files in the repo. */
+export function buildVideoStepPrompt(step: VideoStep, card: CardItem, cli: CliEngine): string {
+  const s = card.slug;
+  const upper = s.toUpperCase();
+  if (step === 'script') {
+    return `[${cli}] Draft or refine SCRIPT_${upper}.md for "${card.title}": include a 2-second hook, ${card.audioMode === 'no_vo' ? 'visual-only beat cues (No-VO)' : 'VO narration beats with [TAG] SFX cues'}, and CTA ending.`;
+  }
+  if (step === 'audio') {
+    return card.audioMode === 'no_vo'
+      ? `[${cli}] Build beat timing in audio/mix_${s}.py using audio/suno_3.wav (visual-only No-VO mode, target -15 LUFS via audio/dsp.py).`
+      : `[${cli}] Scan pauses in voice/${s}_voice.wav and build audio/mix_${s}.py using audio/dsp.py (duck Suno BGM behind VO, normalize to -15 LUFS).`;
+  }
+  if (step === 'scene') {
+    return `[${cli}] Implement 3D stage & character animation in src/videos/${s}/ using the ${card.rigMode === 'stickman' ? 'procedural Stickman rig' : 'src/videos/chibi/sprite sheet (sprites/ + faces/ + fx/)'}, register ${card.compositionId} in src/Root.tsx, and run npm run typecheck.`;
+  }
+  return `[${cli}] Render 2K video for ${card.compositionId} (--crf 16 --scale 1.3333333333333333) to out/${s}/${s}_2k.mp4 and verify loudness & frames with python scripts/short_qa.py.`;
 }

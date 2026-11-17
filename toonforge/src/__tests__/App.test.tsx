@@ -7,15 +7,16 @@ const mockEnv: EnvStatus = {
   repoRoot: 'c:\\workspace\\toonforge',
   branch: 'main',
   probes: [
-    { id: 'git', name: 'Git', installed: true, version: '2.56.0' },
-    { id: 'node', name: 'Node.js', installed: true, version: 'v24.21.0' },
-    { id: 'python', name: 'Python', installed: true, version: '3.12' },
-    { id: 'ffmpeg', name: 'FFmpeg', installed: true, version: '7.1' },
-    { id: 'cargo', name: 'Rust / Cargo', installed: false },
-    { id: 'agy', name: 'Antigravity CLI', installed: true },
-    { id: 'claude', name: 'Claude Code CLI', installed: false },
-    { id: 'codex', name: 'Codex CLI', installed: false },
-    { id: 'opencode', name: 'OpenCode CLI', installed: false },
+    { id: 'git', name: 'Git', installed: true, version: '2.56.0', role: 'Clones & syncs your template repository', installCmd: 'winget install Git.Git' },
+    { id: 'node', name: 'Node.js (>=20)', installed: true, version: 'v24.21.0', role: 'Bundles TypeScript & renders Three.js/Remotion scenes', installCmd: 'winget install OpenJS.NodeJS.LTS' },
+    { id: 'python', name: 'Python (>=3.10)', installed: true, version: '3.12', role: 'Runs VO sync, -15 LUFS DSP mix & frame QA', installCmd: 'winget install Python.Python.3.12' },
+    { id: 'py_deps', name: 'NumPy + Pillow', installed: true, version: 'ok', role: 'Analyzes luminance & contact sheets in short_qa.py', installCmd: 'python -m pip install numpy pillow' },
+    { id: 'ffmpeg', name: 'FFmpeg + FFprobe', installed: true, version: '7.1', role: 'Normalizes -15 LUFS audio & encodes MP4', installCmd: 'winget install Gyan.FFmpeg' },
+    { id: 'chromium', name: 'Chromium / Chrome', installed: true, version: 'chrome.exe', role: 'Headless WebGL engine used by Remotion to render frames', installCmd: 'npx remotion browser ensure' },
+    { id: 'agy', name: 'Antigravity CLI', installed: true, role: 'Built-in IDE coding agent', installCmd: 'Bundled' },
+    { id: 'claude', name: 'Claude Code CLI', installed: false, role: 'Requires Claude Pro/Max', installCmd: 'npm install -g @anthropic-ai/claude-code' },
+    { id: 'codex', name: 'Codex CLI', installed: false, role: 'Requires ChatGPT Plus', installCmd: 'npm install -g @openai/codex' },
+    { id: 'opencode', name: 'OpenCode CLI', installed: false, role: 'Open-source BYOK CLI', installCmd: 'npm install -g opencode-ai' },
   ],
 };
 
@@ -39,6 +40,7 @@ const initialBoard: BoardState = {
       rigMode: 'chibi',
       durationLabel: 'Script Ready',
       compositionId: 'AsyncShort',
+      scriptFile: 'SCRIPT_ASYNC.md',
     },
     {
       id: 'dbindex',
@@ -49,6 +51,13 @@ const initialBoard: BoardState = {
       rigMode: 'chibi',
       durationLabel: '93.7s VO',
       compositionId: 'DbIndexShort',
+      scriptFile: 'SCRIPT.md',
+      mixScript: 'audio/mix_dbindex.py',
+      videoFile: 'out/dbindex/dbindex_2k.mp4',
+      qaReport: 'out/dbindex/qa/report.md',
+      loudness: '-15.1 LUFS',
+      specs: '1440x2560 30/1 fps, 2812 frames',
+      stills: ['out/dbindex/qa/sheet_0000.jpg'],
     },
   ],
 };
@@ -58,70 +67,99 @@ vi.mock('../lib/backend', () => ({
   getRigs: vi.fn(async () => mockRigs),
   loadBoard: vi.fn(async () => structuredClone(initialBoard)),
   saveBoard: vi.fn(async (board: BoardState) => board),
-  syncRepo: vi.fn(async () => ({ ok: true, lines: ['git status clean · synced main'] })),
+  createCard: vi.fn(async (title: string) => ({
+    ...initialBoard,
+    activeLane: 'backlog' as const,
+    cards: [
+      {
+        id: 'newshort',
+        slug: 'newshort',
+        title,
+        lane: 'backlog' as const,
+        audioMode: 'needs_vo' as const,
+        rigMode: 'chibi' as const,
+        durationLabel: 'Script Ready',
+        compositionId: 'NewshortShort',
+        scriptFile: 'SCRIPT_NEWSHORT.md',
+      },
+      ...initialBoard.cards,
+    ],
+  })),
+  syncRepo: vi.fn(async () => ({ ok: true, lines: ['working tree clean · main'] })),
   runPipeline: vi.fn(async () => ({ ok: true, step: 'qa', lines: ['SPECS 1440x2560 OK', 'QA Pass'] })),
   execCliCommand: vi.fn(async (_engine: string, cmd: string) => ({
     ok: true,
     stdout: `executed: ${cmd}`,
     stderr: '',
   })),
+  mediaUrl: vi.fn((relPath: string) => `/api/media?path=${encodeURIComponent(relPath)}`),
 }));
 
-describe('ToonForge Studio App UI', () => {
-  it('renders QuickLiquid monochrome chrome, Priority controls, and toggles Light/Dark themes', async () => {
+describe('ToonForge Full-Stack Studio UI', () => {
+  it('toggles Light/Dark monochrome themes and renders real workspace card telemetry (no dummy state)', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
+    expect(screen.getAllByText(/-15\.1 LUFS/i).length).toBeGreaterThanOrEqual(1);
 
     const frame = document.getElementById('studio-frame');
     expect(frame).toHaveAttribute('data-mode', 'dark');
-
     fireEvent.click(screen.getByRole('button', { name: /Light/i }));
     expect(frame).toHaveAttribute('data-mode', 'light');
-    expect(screen.getByRole('button', { name: /Dark/i })).toBeInTheDocument();
   });
 
-  it('opens Compare icon modal and First-Run Setup Guide modal cleanly', async () => {
+  it('shows live icon samples inside Choose Icon dialog and video-creation dependencies inside Setup Guide', async () => {
     render(<App />);
-    await waitFor(() => expect(screen.getByText('ToonForge')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Compare/i }));
-    expect(screen.getByText('Choose ToonForge App Icon')).toBeInTheDocument();
-    expect(screen.getByText('Iso Cube + Chibi')).toBeInTheDocument();
+    expect(screen.getByText('Live Icon Sample')).toBeInTheDocument();
+    expect(screen.getByText('App Dock')).toBeInTheDocument();
+    expect(screen.getByText('9:16 Short')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Apply Icon/i }));
 
     fireEvent.click(screen.getByRole('button', { name: /Setup Guide/i }));
-    expect(screen.getByText('First-Run Setup & Walkthrough')).toBeInTheDocument();
+    expect(screen.getByText(/Needed to Create Videos/i)).toBeInTheDocument();
+    expect(document.querySelector('.req-list')?.textContent).toMatch(/NumPy \+ Pillow/i);
+    expect(screen.getByText(/Headless WebGL engine/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Manual Terminal/i }));
     expect(screen.getByText(/pip install numpy pillow/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Quick Walkthrough/i }));
-    expect(screen.getByText(/Sync Template Repo & Toolchain/i)).toBeInTheDocument();
   });
 
-  it('auto-queues Backlog cards when audio badge is switched to VO Ready while Auto-Q is ON', async () => {
+  it('switches Center Stage between Rig Diorama, real 2K Video player, and Stills strip', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Video$/i }));
+    expect(document.querySelector('video')?.getAttribute('src')).toContain('out%2Fdbindex%2Fdbindex_2k.mp4');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stills$/i }));
+    expect(document.querySelector('img[src*="sheet_0000.jpg"]')).toBeInTheDocument();
+  });
+
+  it('explains AI CLI account requirements clearly and builds per-card guided prompts', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
+
+    expect(document.querySelector('.ai-guide-bar')?.textContent).toMatch(/Built-in with Antigravity IDE/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /Claude/i }));
+    expect(document.querySelector('.ai-guide-bar')?.textContent).toMatch(/Requires Claude Pro \/ Max account/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /2\. Audio Mix/i }));
+    await waitFor(() => {
+      expect(document.querySelector('.cli-log')?.textContent).toMatch(/audio\/mix_dbindex\.py/i);
+    });
+  });
+
+  it('auto-queues Backlog cards when toggled to VO Ready while Auto-Q is ON', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Backlog/i }));
-    expect(screen.getByText('Async Job Queues')).toBeInTheDocument();
-
     fireEvent.click(screen.getByRole('button', { name: /Needs VO/i }));
     await waitFor(() => {
       expect(screen.getByText('Async Job Queues')).toBeInTheDocument();
       expect(screen.getAllByRole('button', { name: /VO Ready/i })).toHaveLength(2);
-    });
-  });
-
-  it('switches character rigs and AI CLI agents with workspace macros', async () => {
-    render(<App />);
-    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: /Stickman/i }));
-    expect(screen.getByText(/Built-in Stickman rig/i)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /Claude/i }));
-    fireEvent.click(screen.getByRole('button', { name: /\+ Build Card/i }));
-    await waitFor(() => {
-      expect(document.querySelector('.cli-log')?.textContent).toMatch(/claude > "Build from active Trello card/i);
     });
   });
 });
