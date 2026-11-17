@@ -1,0 +1,21 @@
+# Dependencies & build artifacts
+node_modules/
+toonforge/node_modules/
+toonforge/dist/
+toonforge/src-tauri/target/
+
+# Rendered outputs, stills & QA dumps
+out/
+_stills/
+*.mp4
+
+# Audio & voiceover binaries
+audio/*.wav
+voice/*.wav
+audio/__pycache__/
+**/__pycache__/
+
+# Local editor & backup artifacts
+.toonforge/backups/
+.DS_Store
+Thumbs.db
