@@ -26,16 +26,25 @@ impl Default for WorkspaceState {
     }
 }
 
+#[tauri::command]
+pub fn get_workspace_root(state: tauri::State<'_, WorkspaceState>) -> String {
+    state.root.to_string_lossy().to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = WorkspaceState::default();
     tauri::Builder::default()
         .manage(state)
         .invoke_handler(tauri::generate_handler![
+            get_workspace_root,
             git_sync::check_environment,
             git_sync::sync_repo,
             board_watch::load_board,
             board_watch::save_board,
+            board_watch::create_card,
+            board_watch::read_script,
+            board_watch::write_script,
             rig_manager::inspect_rigs,
             pipeline_job::run_pipeline,
             pty_host::exec_cli_command,

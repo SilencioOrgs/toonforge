@@ -1,10 +1,21 @@
-import type { BoardState, CliEngine, EnvStatus, RigMode, RigSummary } from './domain';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import type {
+  BoardState,
+  CliEngine,
+  EnvStatus,
+  PipelineJobResult,
+  RigMode,
+  RigSummary,
+  ScriptDoc,
+} from './domain';
 
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
   }
 }
+
+let cachedWorkspaceRoot = '';
 
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
@@ -27,8 +38,14 @@ async function httpJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getEnvStatus(): Promise<EnvStatus> {
-  if (isTauriRuntime()) return tauriInvoke<EnvStatus>('check_environment');
-  return httpJson<EnvStatus>('/api/env');
+  if (isTauriRuntime()) {
+    const env = await tauriInvoke<EnvStatus>('check_environment');
+    cachedWorkspaceRoot = env.repoRoot;
+    return env;
+  }
+  const env = await httpJson<EnvStatus>('/api/env');
+  cachedWorkspaceRoot = env.repoRoot;
+  return env;
 }
 
 export async function getRigs(): Promise<RigSummary> {
@@ -57,6 +74,19 @@ export async function createCard(title: string, rigMode: RigMode): Promise<Board
   });
 }
 
+export async function getCardScript(slug: string): Promise<ScriptDoc> {
+  if (isTauriRuntime()) return tauriInvoke<ScriptDoc>('read_script', { slug });
+  return httpJson<ScriptDoc>(`/api/script?slug=${encodeURIComponent(slug)}`);
+}
+
+export async function saveCardScript(slug: string, content: string): Promise<ScriptDoc> {
+  if (isTauriRuntime()) return tauriInvoke<ScriptDoc>('write_script', { slug, content });
+  return httpJson<ScriptDoc>('/api/script', {
+    method: 'PUT',
+    body: JSON.stringify({ slug, content }),
+  });
+}
+
 export async function syncRepo(): Promise<{ ok: boolean; lines: string[] }> {
   if (isTauriRuntime()) return tauriInvoke<{ ok: boolean; lines: string[] }>('sync_repo');
   return httpJson<{ ok: boolean; lines: string[] }>('/api/sync', { method: 'POST', body: '{}' });
@@ -64,15 +94,12 @@ export async function syncRepo(): Promise<{ ok: boolean; lines: string[] }> {
 
 export async function runPipeline(
   slug: string,
-  action: 'stills' | 'render',
-): Promise<{ ok: boolean; step: string; lines: string[] }> {
+  action: 'stills' | 'render' | 'typecheck',
+): Promise<PipelineJobResult> {
   if (isTauriRuntime()) {
-    return tauriInvoke<{ ok: boolean; step: string; lines: string[] }>('run_pipeline', {
-      slug,
-      action,
-    });
+    return tauriInvoke<PipelineJobResult>('run_pipeline', { slug, action });
   }
-  return httpJson<{ ok: boolean; step: string; lines: string[] }>('/api/pipeline/run', {
+  return httpJson<PipelineJobResult>('/api/pipeline/run', {
     method: 'POST',
     body: JSON.stringify({ slug, action }),
   });
@@ -95,5 +122,10 @@ export async function execCliCommand(
 }
 
 export function mediaUrl(relPath: string): string {
+  if (isTauriRuntime() && cachedWorkspaceRoot) {
+    const cleanRel = relPath.replace(/^[/\\]+/, '');
+    const sep = cachedWorkspaceRoot.includes('\\') ? '\\' : '/';
+    return convertFileSrc(`${cachedWorkspaceRoot}${sep}${cleanRel}`);
+  }
   return `/api/media?path=${encodeURIComponent(relPath)}`;
 }

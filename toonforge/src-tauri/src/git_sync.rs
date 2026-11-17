@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::path::Path;
 use std::process::Command;
 use tauri::State;
 
@@ -59,6 +60,26 @@ fn probe_binary(id: &str, name: &str, bin: &str, args: &[&str], role: &str, inst
     }
 }
 
+fn probe_chromium(root: &Path) -> EnvProbe {
+    let candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ];
+    let found = candidates.iter().find(|p| Path::new(p).exists()).copied();
+    let remotion_cache = root.join("node_modules").join(".remotion").exists();
+    EnvProbe {
+        id: "chromium".to_string(),
+        name: "Chromium / Chrome".to_string(),
+        installed: found.is_some() || remotion_cache,
+        version: found.map(|p| p.to_string()).or_else(|| if remotion_cache { Some("remotion cache".into()) } else { None }),
+        role: "Headless WebGL browser engine used by Remotion to render MP4 frames".to_string(),
+        install_cmd: "npx remotion browser ensure".to_string(),
+    }
+}
+
 #[tauri::command]
 pub fn check_environment(state: State<'_, WorkspaceState>) -> EnvStatus {
     let probes = vec![
@@ -67,6 +88,7 @@ pub fn check_environment(state: State<'_, WorkspaceState>) -> EnvStatus {
         probe_binary("python", "Python (>=3.10)", "python", &["--version"], "Executes VO sync, -15 LUFS DSP audio mix & frame QA", "winget install Python.Python.3.12"),
         probe_binary("py_deps", "NumPy + Pillow", "python", &["-c", "import numpy, PIL; print('numpy+pillow OK')"], "Analyzes frame luma, black frames & contact sheets", "python -m pip install numpy pillow"),
         probe_binary("ffmpeg", "FFmpeg + FFprobe", "ffmpeg", &["-version"], "Normalizes -15 LUFS audio & encodes/analyzes MP4 streams", "winget install Gyan.FFmpeg"),
+        probe_chromium(&state.root),
         probe_binary("agy", "Antigravity CLI", "agy", &["--version"], "Built-in IDE coding agent (no external API key needed)", "Bundled with Antigravity IDE"),
         probe_binary("claude", "Claude Code CLI", "claude", &["--version"], "Anthropic CLI agent (requires Claude Pro/Max or API key)", "npm install -g @anthropic-ai/claude-code"),
         probe_binary("codex", "Codex CLI", "codex", &["--version"], "OpenAI CLI agent (requires ChatGPT Plus/Pro or OPENAI_API_KEY)", "npm install -g @openai/codex"),
@@ -93,27 +115,36 @@ pub fn check_environment(state: State<'_, WorkspaceState>) -> EnvStatus {
 
 #[tauri::command]
 pub fn sync_repo(state: State<'_, WorkspaceState>) -> SyncResult {
-    let status = Command::new("git")
-        .args(["status", "--short"])
+    let mut lines = Vec::new();
+    let has_remote = Command::new("git")
+        .args(["remote"])
         .current_dir(&state.root)
-        .output();
+        .output()
+        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false);
 
+    if has_remote {
+        if let Ok(pull) = Command::new("git").args(["pull", "--ff-only"]).current_dir(&state.root).output() {
+            let txt = String::from_utf8_lossy(&pull.stdout).trim().to_string();
+            if !txt.is_empty() {
+                lines.push(txt);
+            }
+        }
+    } else {
+        lines.push("local git repo clean (no upstream remote configured yet)".to_string());
+    }
+
+    let status = Command::new("git").args(["status", "--short"]).current_dir(&state.root).output();
     match status {
         Ok(out) => {
             let text = String::from_utf8_lossy(&out.stdout);
-            let lines = if text.trim().is_empty() {
-                vec!["working tree clean · synced".to_string()]
+            if text.trim().is_empty() {
+                lines.push("working tree clean".to_string());
             } else {
-                vec![format!("modified entries: {}", text.lines().count())]
-            };
-            SyncResult {
-                ok: out.status.success(),
-                lines,
+                lines.push(format!("modified entries: {}", text.lines().count()));
             }
+            SyncResult { ok: out.status.success(), lines }
         }
-        Err(err) => SyncResult {
-            ok: false,
-            lines: vec![err.to_string()],
-        },
+        Err(err) => SyncResult { ok: false, lines: vec![err.to_string()] },
     }
 }

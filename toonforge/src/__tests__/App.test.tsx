@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
-import type { BoardState, EnvStatus, RigSummary } from '../lib/domain';
+import type { BoardState, EnvStatus, RigSummary, ScriptDoc } from '../lib/domain';
 
 const mockEnv: EnvStatus = {
   repoRoot: 'c:\\workspace\\toonforge',
@@ -22,7 +22,15 @@ const mockEnv: EnvStatus = {
 
 const mockRigs: RigSummary = {
   stickman: { ready: true, label: 'Built-in Procedural Stickman' },
-  chibi: { ready: true, sprites: 21, faces: 16, fx: 6 },
+  chibi: {
+    ready: true,
+    sprites: 21,
+    faces: 16,
+    fx: 6,
+    spriteFiles: ['idle.png', 'cheer.png'],
+    faceFiles: ['happy.png', 'focus.png'],
+    fxFiles: ['sparkle.png'],
+  },
 };
 
 const initialBoard: BoardState = {
@@ -51,8 +59,11 @@ const initialBoard: BoardState = {
       rigMode: 'chibi',
       durationLabel: '93.7s VO',
       compositionId: 'DbIndexShort',
-      scriptFile: 'SCRIPT.md',
+      scriptFile: 'SCRIPT_DBINDEX.md',
+      voiceFile: 'dbindex_voice.wav',
+      voicePath: 'voice/dbindex_voice.wav',
       mixScript: 'audio/mix_dbindex.py',
+      mixWavFile: 'audio/mix_dbindex.wav',
       videoFile: 'out/dbindex/dbindex_2k.mp4',
       qaReport: 'out/dbindex/qa/report.md',
       loudness: '-15.1 LUFS',
@@ -85,8 +96,20 @@ vi.mock('../lib/backend', () => ({
       ...initialBoard.cards,
     ],
   })),
+  getCardScript: vi.fn(async (slug: string): Promise<ScriptDoc> => ({
+    slug,
+    file: `SCRIPT_${slug.toUpperCase()}.md`,
+    exists: true,
+    content: '# DbIndex Script\nHook: Slow search query fixed by B-Tree!',
+  })),
+  saveCardScript: vi.fn(async (slug: string, content: string): Promise<ScriptDoc> => ({
+    slug,
+    file: `SCRIPT_${slug.toUpperCase()}.md`,
+    exists: true,
+    content,
+  })),
   syncRepo: vi.fn(async () => ({ ok: true, lines: ['working tree clean · main'] })),
-  runPipeline: vi.fn(async () => ({ ok: true, step: 'qa', lines: ['SPECS 1440x2560 OK', 'QA Pass'] })),
+  runPipeline: vi.fn(async () => ({ ok: true, step: 'qa', completionPct: 100, lines: ['SPECS 1440x2560 OK', 'QA Pass'] })),
   execCliCommand: vi.fn(async (_engine: string, cmd: string) => ({
     ok: true,
     stdout: `executed: ${cmd}`,
@@ -95,11 +118,12 @@ vi.mock('../lib/backend', () => ({
   mediaUrl: vi.fn((relPath: string) => `/api/media?path=${encodeURIComponent(relPath)}`),
 }));
 
-describe('ToonForge Full-Stack Studio UI', () => {
-  it('toggles Light/Dark monochrome themes and renders real workspace card telemetry (no dummy state)', async () => {
+describe('ToonForge Full-Stack Modular Studio UI', () => {
+  it('toggles Light/Dark monochrome themes and renders real workspace card telemetry', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
     expect(screen.getAllByText(/-15\.1 LUFS/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/100%/)).toBeInTheDocument();
 
     const frame = document.getElementById('studio-frame');
     expect(frame).toHaveAttribute('data-mode', 'dark');
@@ -125,15 +149,24 @@ describe('ToonForge Full-Stack Studio UI', () => {
     expect(screen.getByText(/pip install numpy pillow/i)).toBeInTheDocument();
   });
 
-  it('switches Center Stage between Rig Diorama, real 2K Video player, and Stills strip', async () => {
+  it('switches Center Stage across Real Chibi PNG Sprite Compositor, Video player, Stills strip, and live Script/Audio editor', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
+
+    expect(document.querySelector('img[src*="sprites%2Fidle.png"]')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /^Video$/i }));
     expect(document.querySelector('video')?.getAttribute('src')).toContain('out%2Fdbindex%2Fdbindex_2k.mp4');
 
     fireEvent.click(screen.getByRole('button', { name: /^Stills$/i }));
     expect(document.querySelector('img[src*="sheet_0000.jpg"]')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Script$/i }));
+    await waitFor(() => {
+      const ta = document.querySelector('textarea') as HTMLTextAreaElement | null;
+      expect(ta?.value).toContain('B-Tree');
+    });
+    expect(document.querySelector('audio[src*="mix_dbindex.wav"]')).toBeInTheDocument();
   });
 
   it('explains AI CLI account requirements clearly and builds per-card guided prompts', async () => {

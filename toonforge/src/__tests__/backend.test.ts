@@ -65,15 +65,99 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(data.probes.some((p) => p.id === 'claude')).toBe(true);
   });
 
-  it('GET /api/board against real repo enriches cards with actual QA loudness and video paths (zero dummy state)', async () => {
+  it('GET /api/board against real repo enriches cards with real script, voice, audio mix, QA loudness, and video paths', async () => {
     const res = await fetch(`${realSrv.baseUrl}/api/board`);
     expect(res.status).toBe(200);
-    const board = (await res.json()) as { cards: Array<{ slug: string; loudness?: string; videoFile?: string; stills?: string[] }> };
+    const board = (await res.json()) as {
+      cards: Array<{
+        slug: string;
+        compositionId: string;
+        audioMode: string;
+        scriptFile?: string;
+        voicePath?: string;
+        mixWavFile?: string;
+        loudness?: string;
+        videoFile?: string;
+        stills?: string[];
+      }>;
+    };
     const binary = board.cards.find((c) => c.slug === 'binary');
     expect(binary).toBeDefined();
+    expect(binary?.compositionId).toBe('BinaryShort');
+    expect(binary?.scriptFile).toBe('SCRIPT_BINARY.md');
+    expect(binary?.voicePath).toBe('voice/binary_voice.wav');
+    expect(binary?.mixWavFile).toBe('audio/mix_binary.wav');
     expect(binary?.videoFile).toContain('out/binary/');
     expect(binary?.loudness).toContain('-15.1 LUFS');
     expect(binary?.stills?.length).toBeGreaterThan(0);
+
+    const dbindex = board.cards.find((c) => c.slug === 'dbindex');
+    expect(dbindex?.compositionId).toBe('DbIndexShort');
+    const race = board.cards.find((c) => c.slug === 'racecondition');
+    expect(race?.compositionId).toBe('RaceConditionShort');
+    expect(race?.audioMode).toBe('vo_ready');
+    expect(race?.voicePath).toBe('voice/race_voice.wav');
+  });
+
+  it('rejects cross-origin simple CSRF, blocks non-media repo files, handles invalid Range/dir streams safely, and validates script writes', async () => {
+    const csrfRes = await fetch(`${realSrv.baseUrl}/api/cli/exec`, {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example', 'content-type': 'text/plain' },
+      body: JSON.stringify({ command: 'echo pwned' }),
+    });
+    expect([403, 415]).toContain(csrfRes.status);
+
+    const plainRes = await fetch(`${realSrv.baseUrl}/api/cli/exec`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ command: 'echo blocked' }),
+    });
+    expect(plainRes.status).toBe(415);
+
+    const pkgRes = await fetch(`${realSrv.baseUrl}/api/media?path=${encodeURIComponent('package.json')}`);
+    expect(pkgRes.status).toBe(403);
+
+    const dirRes = await fetch(`${realSrv.baseUrl}/api/media?path=${encodeURIComponent('out')}`);
+    expect(dirRes.status).toBe(404);
+
+    const badRange = await fetch(`${realSrv.baseUrl}/api/media?path=${encodeURIComponent('src/videos/chibi/sprites/idle.png')}`, {
+      headers: { Range: 'bytes=999999999-' },
+    });
+    expect(badRange.status).toBe(416);
+
+    const badPut = await fetch(`${tmpSrv.baseUrl}/api/script`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'dbindex' }),
+    });
+    expect(badPut.status).toBe(400);
+
+    const missingQa = await fetch(`${tmpSrv.baseUrl}/api/pipeline/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'dbindex', action: 'render' }),
+    });
+    const qaData = (await missingQa.json()) as { ok: boolean; lines: string[] };
+    expect(qaData.ok).toBe(false);
+    expect(qaData.lines.join(' ')).toContain('DbIndexShort');
+  });
+
+  it('GET and PUT /api/script read and write workspace SCRIPT_*.md files safely', async () => {
+    const readRes = await fetch(`${realSrv.baseUrl}/api/script?slug=binary`);
+    expect(readRes.status).toBe(200);
+    const doc = (await readRes.json()) as { file: string; exists: boolean; content: string };
+    expect(doc.file).toBe('SCRIPT_BINARY.md');
+    expect(doc.exists).toBe(true);
+    expect(doc.content.length).toBeGreaterThan(20);
+
+    const writeRes = await fetch(`${tmpSrv.baseUrl}/api/script`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'dbindex', content: '# Updated DbIndex Script\nHook line!' }),
+    });
+    expect(writeRes.status).toBe(200);
+    const saved = await fs.readFile(path.join(tmpDir, 'SCRIPT_DBINDEX.md'), 'utf8');
+    expect(saved).toContain('Updated DbIndex Script');
   });
 
   it('POST /api/cards creates a real SCRIPT_<SLUG>.md and GET /api/media streams safe paths', async () => {
@@ -97,17 +181,20 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(badRes.status).toBe(403);
   });
 
-  it('GET /api/rigs inspects real chibi sprite directories cleanly', async () => {
+  it('GET /api/rigs inspects real chibi sprite directories and lists PNG asset names cleanly', async () => {
     const res = await fetch(`${realSrv.baseUrl}/api/rigs`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       stickman: { ready: boolean };
-      chibi: { sprites: number; faces: number; fx: number };
+      chibi: { sprites: number; faces: number; fx: number; spriteFiles?: string[]; faceFiles?: string[]; fxFiles?: string[] };
     };
     expect(data.stickman.ready).toBe(true);
     expect(data.chibi.sprites).toBe(21);
     expect(data.chibi.faces).toBe(16);
     expect(data.chibi.fx).toBe(6);
+    expect(data.chibi.spriteFiles).toContain('idle.png');
+    expect(data.chibi.faceFiles?.length).toBe(16);
+    expect(data.chibi.fxFiles?.length).toBe(6);
   });
 
   it('GET and POST /api/board initialize and persist .toonforge/board.json', async () => {

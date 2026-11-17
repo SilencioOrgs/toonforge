@@ -6,6 +6,8 @@ import {
   buildAiSetupPrompt,
   buildManualSetupCommands,
   buildVideoStepPrompt,
+  computeCardCompletionPct,
+  moveCardToLane,
   setCardRig,
   toggleCardAudioMode,
   type BoardState,
@@ -143,5 +145,26 @@ describe('ToonForge domain Kanban & Auto-Queue state machine', () => {
     const renderPrompt = buildVideoStepPrompt('render', card, 'agy');
     expect(renderPrompt).toContain('DbIndexShort');
     expect(renderPrompt).toContain('scripts/short_qa.py');
+  });
+
+  it('computes deterministic completion percentage from real card artifacts and moves cards across lanes', () => {
+    const base = sampleBoard().cards[0];
+    expect(computeCardCompletionPct(base)).toBe(0);
+    expect(computeCardCompletionPct({ ...base, scriptFile: 'SCRIPT_ASYNC.md' })).toBe(25);
+    expect(computeCardCompletionPct({ ...base, scriptFile: 'SCRIPT_ASYNC.md', voiceFile: 'async_voice.wav' })).toBe(50);
+    expect(computeCardCompletionPct({ ...base, scriptFile: 'SCRIPT_ASYNC.md', audioMode: 'no_vo', videoFile: 'out/async/a.mp4' })).toBe(75);
+    expect(
+      computeCardCompletionPct({
+        ...base,
+        scriptFile: 'SCRIPT_ASYNC.md',
+        voiceFile: 'async_voice.wav',
+        videoFile: 'out/async/a.mp4',
+        qaReport: 'out/async/qa/report.md',
+      }),
+    ).toBe(100);
+
+    const moved = moveCardToLane(sampleBoard(), 'async-queues', 'done');
+    expect(moved.cards.find((c) => c.id === 'async-queues')?.lane).toBe('done');
+    expect(moved.activeLane).toBe('done');
   });
 });

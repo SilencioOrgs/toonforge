@@ -1,65 +1,36 @@
-export type LaneId = 'backlog' | 'queued' | 'done';
-export type AudioMode = 'needs_vo' | 'vo_ready' | 'no_vo';
-export type RigMode = 'stickman' | 'chibi';
-export type CliEngine = 'agy' | 'claude' | 'codex' | 'opencode';
-export type LogoConcept = 'cube' | 'clapper' | 'portal';
-export type VideoStep = 'script' | 'audio' | 'scene' | 'render';
+import type {
+  AiProviderGuide,
+  AudioMode,
+  BoardState,
+  CardItem,
+  CliEngine,
+  EnvProbe,
+  EnvStatus,
+  LaneId,
+  LogoConcept,
+  PipelineJobResult,
+  RigMode,
+  RigSummary,
+  ScriptDoc,
+  VideoStep,
+} from '../types/studio';
 
-export interface CardItem {
-  id: string;
-  slug: string;
-  title: string;
-  lane: LaneId;
-  audioMode: AudioMode;
-  rigMode: RigMode;
-  durationLabel: string;
-  compositionId: string;
-  voiceFile?: string;
-  scriptFile?: string;
-  mixScript?: string;
-  videoFile?: string;
-  qaReport?: string;
-  stills?: string[];
-  loudness?: string;
-  specs?: string;
-}
-
-export interface BoardState {
-  version: number;
-  autoQueue: boolean;
-  activeLane: LaneId;
-  selectedCardId: string;
-  cards: CardItem[];
-}
-
-export interface EnvProbe {
-  id: string;
-  name: string;
-  installed: boolean;
-  version?: string;
-  role?: string;
-  installCmd?: string;
-}
-
-export interface EnvStatus {
-  repoRoot: string;
-  branch: string;
-  probes: EnvProbe[];
-}
-
-export interface RigSummary {
-  stickman: { ready: boolean; label: string };
-  chibi: { ready: boolean; sprites: number; faces: number; fx: number };
-}
-
-export interface AiProviderGuide {
-  id: CliEngine;
-  title: string;
-  accountReq: string;
-  summary: string;
-  installCmd: string;
-  loginCmd: string;
-}
+export type {
+  AiProviderGuide,
+  AudioMode,
+  BoardState,
+  CardItem,
+  CliEngine,
+  EnvProbe,
+  EnvStatus,
+  LaneId,
+  LogoConcept,
+  PipelineJobResult,
+  RigMode,
+  RigSummary,
+  ScriptDoc,
+  VideoStep,
+};
 
 export const AI_PROVIDER_GUIDES: Record<CliEngine, AiProviderGuide> = {
   agy: {
@@ -117,6 +88,31 @@ function slugifyTitle(title: string): string {
   );
 }
 
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Computes real card completion percentage purely from verified workspace artifacts. */
+export function computeCardCompletionPct(card?: CardItem): number {
+  if (!card) return 0;
+  let score = 0;
+  if (card.scriptFile) score += 25;
+  if (card.voiceFile || card.audioMode === 'no_vo' || card.mixWavFile) score += 25;
+  if (card.videoFile) score += 25;
+  if (card.qaReport) score += 25;
+  return score;
+}
+
+/** Moves a card cleanly to another Kanban lane and updates selection. */
+export function moveCardToLane(board: BoardState, cardId: string, lane: LaneId): BoardState {
+  return {
+    ...board,
+    activeLane: lane,
+    selectedCardId: cardId,
+    cards: board.cards.map((card) => (card.id === cardId ? { ...card, lane } : card)),
+  };
+}
+
 /** Cycles a card's audio mode and auto-queues ready cards from backlog when enabled. */
 export function toggleCardAudioMode(board: BoardState, cardId: string): BoardState {
   let transitionedToQueued = false;
@@ -172,7 +168,7 @@ export function applyVoiceFilesToBoard(board: BoardState, voiceFiles: string[]):
 
 /** Prepends a new script card into the Backlog lane and selects it. */
 export function addCardToBoard(board: BoardState, title: string, rigMode: RigMode): BoardState {
-  const cleanTitle = title.trim() || `New Short #${board.cards.length + 1}`;
+  const cleanTitle = title.trim() || `Short ${board.cards.length + 1}`;
   const slug = slugifyTitle(cleanTitle);
   const id = `${slug}-${board.cards.length + 1}`;
   const card: CardItem = {
@@ -221,8 +217,8 @@ export function buildManualSetupCommands(probes: EnvProbe[]): string {
   const missingFfmpeg = probes.some((p) => p.id === 'ffmpeg' && !p.installed);
   const missingPy = probes.some((p) => (p.id === 'python' || p.id === 'py_deps') && !p.installed);
   const lines = [
-    '# 1. Clone repo & install Remotion + Three.js + React packages',
-    'git clone https://github.com/SilencioOrgs/toonforge-template.git && cd toonforge-template',
+    '# 1. Clone your fork/repo & install Remotion + Three.js + React packages',
+    'git clone <your-toonforge-repo-url> && cd <repo-dir>',
     'npm ci && npx remotion browser ensure && npm run typecheck',
     '# 2. Install Python libs for -15 LUFS audio mastering & frame QA',
     'python -m pip install numpy pillow',
