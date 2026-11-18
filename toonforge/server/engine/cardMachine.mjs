@@ -46,7 +46,7 @@ export function completeJob(card, kind, result) {
     script: card.audio === 'vo' ? 'voice' : 'scene',
     words: 'scene', scene: 'sound', sound: 'preview', preview: 'review', render: 'done',
   }[kind];
-  const out = { ...card, files, state: next, history: [...card.history, { kind, summary: result.summary }] };
+  const out = { ...card, files, state: next };
   if (kind === 'render' && Array.isArray(result.warnings)) out.warnings = result.warnings;
   return out;
 }

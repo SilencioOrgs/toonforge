@@ -42,6 +42,11 @@ describe('cardMachine', () => {
     expect(c.files.final).toBe('f.mp4');
   });
 
+  it('completeJob leaves history untouched', () => {
+    const c = m.completeJob(visual(), 'script', { summary: 's' });
+    expect(c.history).toEqual([]);
+  });
+
   it('visual path skips voice', () => {
     const c = m.completeJob(visual(), 'script', { summary: 's' });
     expect(c.state).toBe('scene');
