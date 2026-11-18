@@ -20,6 +20,31 @@ pub struct CliExecResult {
     pub stderr: String,
 }
 
+/// Binary and the args that come before the prompt for each agent CLI; None means not an agent.
+/// Mirrors AI_ENGINE_ARGS in server/services/jobRunner.mjs.
+fn agent_command(engine: &str) -> Option<(&'static str, &'static [&'static str])> {
+    match engine {
+        "claude" => Some(("claude", &["-p"])),
+        "codex" => Some(("codex", &["exec"])),
+        "opencode" => Some(("opencode", &["run"])),
+        "agy" => Some(("agy", &["--mode", "accept-edits", "-p"])),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_command;
+
+    #[test]
+    fn each_engine_maps_only_to_its_own_cli() {
+        assert_eq!(agent_command("agy"), Some(("agy", &["--mode", "accept-edits", "-p"][..])));
+        assert_eq!(agent_command("claude"), Some(("claude", &["-p"][..])));
+        assert_eq!(agent_command("shell"), None);
+        assert_eq!(agent_command("[agy]"), None);
+    }
+}
+
 fn run_with_pty(cmd_bin: &str, args: &[&str], root: &std::path::Path) -> Result<CliExecResult, String> {
     let pty_system = portable_pty::native_pty_system();
     let size = PtySize { rows: 24, cols: 100, pixel_width: 0, pixel_height: 0 };
@@ -57,15 +82,19 @@ pub fn exec_cli_command(
         map.entry(engine.clone()).or_insert(PtySize { rows: 24, cols: 100, pixel_width: 0, pixel_height: 0 });
     }
 
-    if trimmed.starts_with("[claude]") {
-        let prompt = trimmed.trim_start_matches("[claude]").trim();
-        return run_with_pty("claude", &["-p", prompt], &state.root)
-            .unwrap_or_else(|e| CliExecResult { ok: false, stdout: String::new(), stderr: e });
+    // The selected engine alone decides where the text goes: an agent gets it as a prompt
+    // (never through a shell), and only engine "shell" runs it as a command.
+    if let Some((bin, pre)) = agent_command(&engine) {
+        let mut args: Vec<&str> = pre.to_vec();
+        args.push(trimmed);
+        return run_with_pty(bin, &args, &state.root).unwrap_or_else(|e| CliExecResult {
+            ok: false,
+            stdout: String::new(),
+            stderr: format!("{bin} could not start (is it installed and on PATH?): {e}"),
+        });
     }
-    if trimmed.starts_with("[codex]") {
-        let prompt = trimmed.trim_start_matches("[codex]").trim();
-        return run_with_pty("codex", &["exec", prompt], &state.root)
-            .unwrap_or_else(|e| CliExecResult { ok: false, stdout: String::new(), stderr: e });
+    if engine != "shell" {
+        return CliExecResult { ok: false, stdout: String::new(), stderr: format!("Unknown engine \"{engine}\"") };
     }
 
     let output = if cfg!(target_os = "windows") {

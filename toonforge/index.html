@@ -10,15 +10,6 @@
     />
   </head>
   <body>
-    <svg width="0" height="0" style="position:absolute;pointer-events:none" aria-hidden="true">
-      <defs>
-        <filter id="ql-refract" x="-8%" y="-8%" width="116%" height="116%">
-          <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="noise" />
-          <feGaussianBlur in="noise" stdDeviation="3.5" result="smooth" />
-          <feDisplacementMap in="SourceGraphic" in2="smooth" scale="9" xChannelSelector="R" yChannelSelector="G" />
-        </filter>
-      </defs>
-    </svg>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

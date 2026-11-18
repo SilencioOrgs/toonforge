@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -227,8 +228,21 @@ async function probeTool(spec, repoRoot) {
   }
 }
 
+// Folder names the claude-animated-shorts skill is installed under (README name, then repo name).
+export const SKILL_DIRS = ['cartoon-3d-short', 'claude-animated-shorts'];
+
+export async function probeSkill(home = os.homedir()) {
+  const base = { id: 'skill', name: 'claude-animated-shorts skill', role: 'The pipeline, templates and references your agent follows (SKILL.md)', installCmd: 'git clone https://github.com/mromidev/claude-animated-shorts ~/.claude/skills/cartoon-3d-short' };
+  for (const dir of SKILL_DIRS) {
+    if (await fileExists(path.join(home, '.claude', 'skills', dir, 'SKILL.md'))) {
+      return { ...base, installed: true, version: `~/.claude/skills/${dir}` };
+    }
+  }
+  return { ...base, installed: false };
+}
+
 export async function getEnvStatus(repoRoot) {
-  const probes = await Promise.all(TOOL_SPECS.map((s) => probeTool(s, repoRoot)));
+  const probes = await Promise.all([...TOOL_SPECS.map((s) => probeTool(s, repoRoot)), probeSkill()]);
   let branch = 'main';
   try {
     const out = await execFileAsync('git', ['branch', '--show-current'], { cwd: repoRoot, timeout: 2500 });

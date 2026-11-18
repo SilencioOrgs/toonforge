@@ -1,36 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ContentBankPane } from './components/ContentBankPane';
-import { IconPickerDialog } from './components/IconPickerDialog';
-import { PipelineAndCliPane } from './components/PipelineAndCliPane';
-import { SetupWizardDialog } from './components/SetupWizardDialog';
-import { StageInspectorPane, type StageTab } from './components/StageInspectorPane';
-import { StoryFlowWizard } from './components/StoryFlowWizard';
-import { TopBar } from './components/TopBar';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AgentDock } from './components/AgentDock';
+import { HowToPage, IntroPage, RequirementsPage, type InstallState } from './components/GuidePages';
+import { LibraryPage } from './components/LibraryPage';
+import { Sidebar } from './components/Sidebar';
+import { LookPage, RenderPage, ScenesPage, ScriptPage, SoundPage, TopicPage, VoicePage } from './components/StepPages';
 import * as backend from './lib/backend';
 import {
-  AI_PROVIDER_GUIDES,
   buildAiSetupPrompt,
   buildManualSetupCommands,
-  buildVideoStepPrompt,
   errorMessage,
   generateScriptFromTopic,
   getTop10TopicsForNiche,
   NICHE_PRESETS,
-  SCRIPT_LANGUAGE_LABELS,
   setCardRig,
+  stripSfxTagsForVoiceover,
   toggleCardAudioMode,
   type BoardState,
   type CliEngine,
   type ContentNicheId,
   type EnvStatus,
-  type LogoConcept,
   type RigMode,
   type RigSummary,
   type ScriptLanguage,
-  type StoryFlowStep,
   type TopicIdea,
-  type VideoStep,
 } from './lib/domain';
+import { nextStep, type PageId } from './lib/pipeline';
 
 async function fileToBase64(file: File): Promise<string> {
   if (typeof file.arrayBuffer === 'function') {
@@ -49,54 +43,41 @@ async function fileToBase64(file: File): Promise<string> {
   });
 }
 
-const INITIAL_EMPTY_BOARD: BoardState = {
-  version: 1,
-  autoQueue: true,
-  activeLane: 'queued',
-  selectedCardId: '',
-  cards: [],
-};
-
+const EMPTY_BOARD: BoardState = { version: 1, autoQueue: true, activeLane: 'queued', selectedCardId: '', cards: [] };
 const VIDEO_REQ_IDS = new Set(['git', 'node', 'python', 'py_deps', 'ffmpeg', 'chromium']);
+const AGENT_IDS = new Set(['claude', 'codex', 'opencode', 'agy']);
 
 export function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-  const [activeLogo, setActiveLogo] = useState<LogoConcept>('cube');
-  const [board, setBoard] = useState<BoardState>(INITIAL_EMPTY_BOARD);
+  const [page, setPage] = useState<PageId>('intro');
+  const [board, setBoard] = useState<BoardState>(EMPTY_BOARD);
   const [loadingBoard, setLoadingBoard] = useState(true);
   const [env, setEnv] = useState<EnvStatus | null>(null);
+  const [checkingEnv, setCheckingEnv] = useState(false);
+  const [installs, setInstalls] = useState<Record<string, InstallState>>({});
   const [rigs, setRigs] = useState<RigSummary | null>(null);
-  const [syncLabel, setSyncLabel] = useState('Sync Repo');
-  const [newCardTitle, setNewCardTitle] = useState('');
-  const [stageView, setStageView] = useState<StageTab>('rig');
-  const [activeCli, setActiveCli] = useState<CliEngine>('agy');
-  const [cliInput, setCliInput] = useState('');
-  const [cliLogs, setCliLogs] = useState<string[]>([
-    'workspace bridge online · scanning SCRIPT_*.md, voice/, and out/',
-  ]);
-  const [pctOverride, setPctOverride] = useState<number | null>(null);
-  const [qaOverride, setQaOverride] = useState<'QA Next' | 'QA Pass' | null>(null);
-  const [setupTab, setSetupTab] = useState<'ai' | 'manual' | 'walk'>('ai');
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<'idle' | 'busy' | 'ok' | 'error'>('idle');
+  const [busyAction, setBusyAction] = useState<'stills' | 'render' | 'typecheck' | null>(null);
 
-  const [viewMode, setViewMode] = useState<'flow' | 'workbench'>('flow');
-  const [storyStep, setStoryStep] = useState<StoryFlowStep>('welcome');
-  const [scriptLang, setScriptLang] = useState<ScriptLanguage>('taglish');
+  // Agent dock
+  const [dockOpen, setDockOpen] = useState(false);
+  const [activeCli, setActiveCli] = useState<CliEngine>('claude');
+  const [cliInput, setCliInput] = useState('');
+  const [cliRunning, setCliRunning] = useState(false);
+  const [cliLogs, setCliLogs] = useState<string[]>(['Workspace connected. Output from ToonForge and your agent appears here.']);
+
+  // Current short: a saved card, or an unsaved draft (draftTitle !== null)
+  const [draftTitle, setDraftTitle] = useState<string | null>(null);
+  const [scriptText, setScriptText] = useState('');
+  const [scriptLoading, setScriptLoading] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [scriptLang, setScriptLang] = useState<ScriptLanguage>('english');
   const [niche, setNiche] = useState<ContentNicheId>('crime');
   const [customNiche, setCustomNiche] = useState('');
   const [selectedTopic, setSelectedTopic] = useState<TopicIdea | null>(null);
-  const [scriptDraft, setScriptDraft] = useState('');
-  const [flowRigMode, setFlowRigMode] = useState<RigMode>('chibi');
-  const [flowCardSlug, setFlowCardSlug] = useState<string | null>(null);
-  const [voUploadStatus, setVoUploadStatus] = useState('');
-  const [cliStatusText, setCliStatusText] = useState('');
+  const [uploadStatus, setUploadStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
-  const logoDialogRef = useRef<HTMLDialogElement>(null);
-  const setupDialogRef = useRef<HTMLDialogElement>(null);
-
-  const appendLog = (line: string) => {
-    setCliLogs((prev) => [...prev.slice(-24), line]);
-  };
+  const appendLog = useCallback((line: string) => setCliLogs((prev) => [...prev.slice(-200), line]), []);
 
   useEffect(() => {
     let active = true;
@@ -106,389 +87,396 @@ export function App() {
         setEnv(envRes);
         setRigs(rigRes);
         setBoard(boardRes);
-        setLoadingBoard(false);
       })
-      .catch((err: unknown) => {
-        if (!active) return;
-        setLoadingBoard(false);
-        appendLog(`startup error > ${errorMessage(err)}`);
-      });
+      .catch((err: unknown) => active && appendLog(`Could not read the workspace: ${errorMessage(err)}`))
+      .finally(() => active && setLoadingBoard(false));
     return () => {
       active = false;
     };
-  }, []);
+  }, [appendLog]);
+
+  const isDraft = draftTitle !== null;
+  const savedCard = useMemo(() => board.cards.find((c) => c.id === board.selectedCardId) ?? board.cards[0], [board]);
+  const card = isDraft ? undefined : savedCard;
+
+  // Load the saved short's script whenever the current short changes.
+  useEffect(() => {
+    if (!card) return;
+    let active = true;
+    setScriptLoading(true);
+    setSaveState('idle');
+    backend
+      .getCardScript(card.slug)
+      .then((doc) => active && setScriptText(doc.content))
+      .catch((err: unknown) => active && appendLog(`Could not load the script for ${card.slug}: ${errorMessage(err)}`))
+      .finally(() => active && setScriptLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [card?.slug, appendLog]);
 
   const persistBoard = (next: BoardState) => {
     setBoard(next);
-    backend.saveBoard(next).catch((err: unknown) => {
-      appendLog(`board save error > ${errorMessage(err)}`);
+    backend.saveBoard(next).catch((err: unknown) => appendLog(`Could not save the board: ${errorMessage(err)}`));
+  };
+
+  const refreshBoard = () => backend.loadBoard().then(setBoard).catch(() => undefined);
+
+  const probes = env?.probes ?? [];
+  const videoReqs = probes.filter((p) => VIDEO_REQ_IDS.has(p.id));
+  const agentProbes = probes.filter((p) => AGENT_IDS.has(p.id));
+  const skillProbe = probes.find((p) => p.id === 'skill');
+  const reqReady =
+    videoReqs.filter((p) => p.installed).length + (agentProbes.some((p) => p.installed) ? 1 : 0) + (skillProbe?.installed ? 1 : 0);
+  const reqTotal = videoReqs.length + (agentProbes.length > 0 ? 1 : 0) + (skillProbe ? 1 : 0);
+
+  const topics = useMemo(() => getTop10TopicsForNiche(niche, customNiche, scriptLang), [niche, customNiche, scriptLang]);
+  const draftRig: RigMode = NICHE_PRESETS.find((p) => p.id === niche)?.recommendedRig ?? 'chibi';
+
+  const sendToAgent = (text: string) => {
+    setCliInput(text);
+    setDockOpen(true);
+  };
+
+  const startNewShort = () => {
+    setDraftTitle('');
+    setSelectedTopic(null);
+    setScriptText('');
+    setSaveState('idle');
+    setUploadStatus(null);
+    setPage('topic');
+  };
+
+  const selectCard = (cardId: string, goNext = false) => {
+    if (cardId === '__draft') return;
+    setDraftTitle(null);
+    setUploadStatus(null);
+    persistBoard({ ...board, selectedCardId: cardId });
+    if (goNext) setPage(nextStep(board.cards.find((c) => c.id === cardId)));
+  };
+
+  const handleSelectTopic = (topic: TopicIdea) => {
+    setSelectedTopic(topic);
+    setDraftTitle(topic.title);
+    setScriptText(generateScriptFromTopic(topic, scriptLang, draftRig));
+    setSaveState('idle');
+    setPage('script');
+  };
+
+  const handleDraftLanguage = (lang: ScriptLanguage) => {
+    setScriptLang(lang);
+    if (!selectedTopic) return;
+    const match = getTop10TopicsForNiche(niche, customNiche, lang).find((t) => t.rank === selectedTopic.rank);
+    if (match) {
+      setSelectedTopic(match);
+      setScriptText(generateScriptFromTopic(match, lang, draftRig));
+    }
+  };
+
+  const handleSaveScript = async () => {
+    setSaveState('saving');
+    try {
+      if (isDraft) {
+        const title = draftTitle?.trim() || `Short ${board.cards.length + 1}`;
+        const next = await backend.createCard(title, draftRig, scriptText);
+        // The bridge prepends the new card; make it the current short.
+        setBoard({ ...next, selectedCardId: next.cards[0]?.id ?? next.selectedCardId });
+        setDraftTitle(null);
+        appendLog(`Saved new short "${title}" as ${next.cards[0]?.scriptFile ?? 'a script file'}.`);
+        setPage('voice');
+      } else if (card) {
+        const saved = await backend.saveCardScript(card.slug, scriptText);
+        appendLog(`Saved ${saved.file}.`);
+      }
+      setSaveState('saved');
+    } catch (err: unknown) {
+      setSaveState('error');
+      appendLog(`Script save failed: ${errorMessage(err)}`);
+    }
+  };
+
+  const handleUpload = async (file: File) => {
+    if (!card) return;
+    try {
+      const next = await backend.uploadVoiceover(card.slug, file.name, await fileToBase64(file));
+      setBoard(next);
+      setUploadStatus({ kind: 'ok', text: `Attached ${file.name}.` });
+      appendLog(`Voice file ${file.name} attached to ${card.slug}.`);
+    } catch (err: unknown) {
+      setUploadStatus({ kind: 'error', text: `Upload failed: ${errorMessage(err)}. Check the file is a .wav or .mp3 and try again.` });
+    }
+  };
+
+  const handleNoVoice = () => {
+    if (!card) return;
+    persistBoard({
+      ...board,
+      cards: board.cards.map((c) =>
+        c.id === card.id ? { ...c, audioMode: 'no_vo' as const, lane: board.autoQueue && c.lane === 'backlog' ? ('queued' as const) : c.lane } : c,
+      ),
     });
   };
 
-  const selectedCard = useMemo(
-    () => board.cards.find((c) => c.id === board.selectedCardId) ?? board.cards[0],
-    [board],
-  );
-
-  const probes = env?.probes ?? [];
-  const videoReqs = useMemo(() => probes.filter((p) => VIDEO_REQ_IDS.has(p.id)), [probes]);
-  const aiSetupPrompt = useMemo(() => buildAiSetupPrompt(activeCli, probes), [activeCli, probes]);
-  const manualCommands = useMemo(() => buildManualSetupCommands(probes), [probes]);
+  const runAction = async (action: 'stills' | 'render' | 'typecheck') => {
+    if (!card) return;
+    setBusyAction(action);
+    appendLog(`Running ${action} for ${card.slug}...`);
+    try {
+      const res = await backend.runPipeline(card.slug, action);
+      res.lines.forEach((l) => appendLog(l));
+      appendLog(res.ok ? `${action} finished.` : `${action} reported problems. Read the lines above.`);
+      if (!res.ok) setDockOpen(true);
+      await refreshBoard();
+    } catch (err: unknown) {
+      appendLog(`${action} failed: ${errorMessage(err)}`);
+      setDockOpen(true);
+    } finally {
+      setBusyAction(null);
+    }
+  };
 
   const handleSync = async () => {
-    setSyncLabel('Syncing...');
+    setSyncState('busy');
     try {
       const res = await backend.syncRepo();
-      setSyncLabel(res.ok ? 'Repo Ready' : 'Sync Err');
-      res.lines.forEach((l) => appendLog(`git > ${l}`));
+      res.lines.forEach((l) => appendLog(`git: ${l}`));
+      setSyncState(res.ok ? 'ok' : 'error');
+      if (res.ok) await refreshBoard();
     } catch (err: unknown) {
-      setSyncLabel('Sync Err');
-      appendLog(`git error > ${errorMessage(err)}`);
+      setSyncState('error');
+      appendLog(`git sync failed: ${errorMessage(err)}`);
     }
   };
 
-  const handleCreateCard = async () => {
-    const title = newCardTitle.trim() || `Short ${board.cards.length + 1}`;
-    setNewCardTitle('');
+  const recheckEnv = async (): Promise<EnvStatus | null> => {
+    setCheckingEnv(true);
     try {
-      const next = await backend.createCard(title, selectedCard?.rigMode ?? 'chibi');
-      setBoard(next);
-      const createdFile = next.cards[0]?.scriptFile ?? 'SCRIPT.md';
-      appendLog(`board > created card "${title}" + ${createdFile}`);
+      const next = await backend.getEnvStatus();
+      setEnv(next);
+      return next;
     } catch (err: unknown) {
-      appendLog(`create card error > ${errorMessage(err)}`);
+      appendLog(`Requirement check failed: ${errorMessage(err)}`);
+      return null;
+    } finally {
+      setCheckingEnv(false);
     }
   };
 
-  const handleRigChange = (rig: RigMode) => {
-    if (!selectedCard) return;
-    persistBoard(setCardRig(board, selectedCard.id, rig));
-    appendLog(`${activeCli} > ${selectedCard.slug} rig set to ${rig === 'stickman' ? 'Built-in Stickman rig' : 'Custom Chibi sprite sheet'}`);
-  };
+  const setInstall = (id: string, s: InstallState) => setInstalls((prev) => ({ ...prev, [id]: s }));
 
-  const handleStills = async () => {
-    if (!selectedCard) return;
-    setStageView('stills');
+  const installOne = async (id: string): Promise<void> => {
+    setInstall(id, { state: 'busy', text: 'Downloading and installing. This can take a few minutes.' });
+    appendLog(`Installing ${id}...`);
     try {
-      const res = await backend.runPipeline(selectedCard.slug, 'stills');
-      res.lines.forEach((l) => appendLog(`stills > ${l}`));
+      const res = await backend.installTool(id);
+      res.lines.forEach((l) => appendLog(`${id}: ${l}`));
+      if (!res.ok) {
+        setInstall(id, { state: 'error', text: res.lines.at(-1) ?? 'The installer failed. Open the agent terminal for details.' });
+        return;
+      }
+      const next = await recheckEnv();
+      const found = next?.probes.find((p) => p.id === id)?.installed;
+      // A fresh install often only lands on PATH for newly started programs.
+      setInstall(id, found ? { state: 'done' } : { state: 'done', text: 'Installed. Restart ToonForge if it still shows as missing.' });
     } catch (err: unknown) {
-      appendLog(`stills error > ${errorMessage(err)}`);
+      setInstall(id, { state: 'error', text: errorMessage(err) });
     }
   };
 
-  const handleRunQa = async () => {
-    if (!selectedCard) return;
+  const installAll = async (ids: string[]) => {
+    for (const id of ids) await installOne(id); // one at a time: installers share winget/npm locks
+  };
+
+  const runShell = async (cmd: string) => {
+    setDockOpen(true);
+    appendLog(`$ ${cmd}`);
     try {
-      const res = await backend.runPipeline(selectedCard.slug, 'render');
-      if (res.completionPct !== undefined) setPctOverride(res.completionPct);
-      setQaOverride(res.ok ? 'QA Pass' : 'QA Next');
-      res.lines.forEach((l) => appendLog(`pipeline > ${l}`));
+      const res = await backend.execCliCommand('shell', cmd);
+      appendLog((res.stdout || res.stderr || 'No output.').trim());
     } catch (err: unknown) {
-      setQaOverride('QA Next');
-      appendLog(`pipeline error > ${errorMessage(err)}`);
+      appendLog(`Command failed: ${errorMessage(err)}`);
     }
-  };
-
-  const handleVerifyTypecheck = async () => {
-    appendLog('tsc > running npx tsc --noEmit...');
-    try {
-      const res = await backend.runPipeline(selectedCard?.slug || 'workspace', 'typecheck');
-      res.lines.forEach((l) => appendLog(`tsc > ${l}`));
-    } catch (err: unknown) {
-      appendLog(`tsc error > ${errorMessage(err)}`);
-    }
-  };
-
-  const handleGuidedStep = (step: VideoStep) => {
-    if (!selectedCard) return;
-    const prompt = buildVideoStepPrompt(step, selectedCard, activeCli);
-    setCliInput(prompt);
-    appendLog(prompt);
   };
 
   const handleCliSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cmd = cliInput.trim();
-    if (!cmd) return;
+    if (!cmd || cliRunning) return;
     setCliInput('');
-    appendLog(`${activeCli} $ ${cmd}`);
+    setCliRunning(true);
+    appendLog(`${activeCli} > ${cmd}`);
     try {
       const res = await backend.execCliCommand(activeCli, cmd);
       if (res.stdout.trim()) appendLog(res.stdout.trim());
       if (res.stderr.trim()) appendLog(`stderr: ${res.stderr.trim()}`);
+      await refreshBoard();
     } catch (err: unknown) {
-      appendLog(`cli error > ${errorMessage(err)}`);
+      appendLog(`${activeCli} failed: ${errorMessage(err)}`);
+    } finally {
+      setCliRunning(false);
     }
   };
 
-  const handleCopy = (key: string, text: string) => {
-    navigator.clipboard?.writeText(text);
-    setCopiedKey(key);
-  };
+  const narration = useMemo(() => stripSfxTagsForVoiceover(scriptText), [scriptText]);
+  const nav = (p: PageId) => setPage(p);
 
-  const flowTopics = useMemo(
-    () => getTop10TopicsForNiche(niche, customNiche, scriptLang),
-    [niche, customNiche, scriptLang],
-  );
-
-  const flowCreatedCard = useMemo(
-    () => (flowCardSlug ? board.cards.find((c) => c.slug === flowCardSlug) ?? null : null),
-    [board.cards, flowCardSlug],
-  );
-
-  const handleFlowLanguageChange = (nextLang: ScriptLanguage) => {
-    setScriptLang(nextLang);
-    if (selectedTopic) {
-      const updatedTopics = getTop10TopicsForNiche(niche, customNiche, nextLang);
-      const matchingTopic = updatedTopics.find((t) => t.rank === selectedTopic.rank) ?? updatedTopics[0];
-      setSelectedTopic(matchingTopic);
-      setScriptDraft(generateScriptFromTopic(matchingTopic, nextLang, flowRigMode));
-    }
-  };
-
-  const handleFlowSelectNiche = (chosenNiche: ContentNicheId) => {
-    setNiche(chosenNiche);
-    const preset = NICHE_PRESETS.find((p) => p.id === chosenNiche);
-    if (preset) setFlowRigMode(preset.recommendedRig);
-    setCliStatusText('');
-    setStoryStep('topics');
-  };
-
-  const handleFlowSelectTopic = (topic: TopicIdea) => {
-    setSelectedTopic(topic);
-    setScriptDraft(generateScriptFromTopic(topic, scriptLang, flowRigMode));
-    setVoUploadStatus('');
-    setStoryStep('script');
-  };
-
-  const handleFlowRigChange = (rig: RigMode) => {
-    setFlowRigMode(rig);
-    if (selectedTopic) {
-      setScriptDraft(generateScriptFromTopic(selectedTopic, scriptLang, rig));
-    }
-  };
-
-  const handleAskAiTop10 = async (prompt: string) => {
-    setCliStatusText(`Running ${activeCli} for fresh ${SCRIPT_LANGUAGE_LABELS[scriptLang]} Top 10 ideas...`);
-    setCliInput(prompt);
-    appendLog(`${activeCli} $ ${prompt}`);
-    try {
-      const res = await backend.execCliCommand(activeCli, prompt);
-      const line = (res.stdout || res.stderr || 'Prompt queued for AI CLI').trim().split(/\r?\n/)[0];
-      setCliStatusText(line);
-      if (line) appendLog(line);
-    } catch (err: unknown) {
-      const msg = errorMessage(err);
-      setCliStatusText(`Ready in CLI panel: ${msg}`);
-      appendLog(`cli > ${msg}`);
-    }
-  };
-
-  const handleSaveScriptAndContinue = async () => {
-    const title = selectedTopic?.title || customNiche.trim() || `Short ${board.cards.length + 1}`;
-    try {
-      const next = await backend.createCard(title, flowRigMode, scriptDraft);
-      setBoard(next);
-      const created = next.cards[0];
-      if (created) {
-        setFlowCardSlug(created.slug);
-        appendLog(`flow > saved ${created.scriptFile || 'SCRIPT.md'} (${SCRIPT_LANGUAGE_LABELS[scriptLang]})`);
-      }
-      setStoryStep('voiceover');
-    } catch (err: unknown) {
-      appendLog(`flow save error > ${errorMessage(err)}`);
-    }
-  };
-
-  const handleUploadVoiceFile = async (file: File) => {
-    const targetSlug = flowCardSlug || selectedCard?.slug;
-    if (!targetSlug) {
-      setVoUploadStatus('Save a script card first before attaching voiceover.');
-      return;
-    }
-    try {
-      const base64Data = await fileToBase64(file);
-      const next = await backend.uploadVoiceover(targetSlug, file.name, base64Data);
-      setBoard(next);
-      setVoUploadStatus(`VO Attached: ${file.name} -> voice/${targetSlug}_voice${file.name.toLowerCase().endsWith('.mp3') ? '.mp3' : '.wav'}`);
-      appendLog(`vo > uploaded ${file.name} for ${targetSlug} (autoQueue=${String(next.autoQueue)})`);
-    } catch (err: unknown) {
-      const msg = errorMessage(err);
-      setVoUploadStatus(`Upload error: ${msg}`);
-      appendLog(`vo error > ${msg}`);
-    }
-  };
-
-  const handleSkipToNoVo = async () => {
-    const targetCard = flowCreatedCard || selectedCard;
-    if (targetCard) {
-      const updated = {
-        ...board,
-        selectedCardId: targetCard.id,
-        cards: board.cards.map((c) => {
-          if (c.id !== targetCard.id) return c;
-          const lane = board.autoQueue && c.lane === 'backlog' ? 'queued' : c.lane;
-          return { ...c, audioMode: 'no_vo' as const, lane };
-        }),
-      };
-      persistBoard(updated);
-      setVoUploadStatus('No-VO Visual Mode active (Suno BGM / SFX timing).');
-    }
-  };
-
-  return (
-    <div id="studio-frame" data-mode={theme}>
-      <TopBar
-        theme={theme}
-        activeLogo={activeLogo}
-        viewMode={viewMode}
-        syncLabel={syncLabel}
-        onChangeViewMode={(mode) => {
-          setViewMode(mode);
-          if (mode === 'workbench' && flowCreatedCard) {
-            setStageView('script');
-          }
-        }}
-        onSelectLogo={setActiveLogo}
-        onOpenCompare={() => logoDialogRef.current?.showModal()}
-        onOpenSetup={() => setupDialogRef.current?.showModal()}
-        onSyncRepo={handleSync}
-        onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
-      />
-
-      {viewMode === 'flow' ? (
-        <StoryFlowWizard
-          step={storyStep}
+  let content: React.ReactNode;
+  switch (page) {
+    case 'intro':
+      content = <IntroPage reqReady={reqReady} reqTotal={reqTotal} onNavigate={nav} onStart={startNewShort} />;
+      break;
+    case 'howto':
+      content = <HowToPage repoRoot={env?.repoRoot} onNavigate={nav} />;
+      break;
+    case 'requirements':
+      content = (
+        <RequirementsPage
+          videoReqs={videoReqs}
+          agentProbes={agentProbes}
+          skillProbe={skillProbe}
+          installs={installs}
+          aiSetupPrompt={buildAiSetupPrompt(activeCli, probes)}
+          manualCommands={buildManualSetupCommands(probes)}
+          checking={checkingEnv}
+          onRecheck={recheckEnv}
+          onInstall={installOne}
+          onInstallAll={installAll}
+          onSendToAgent={sendToAgent}
+          onVerify={() => runShell('git --version && node -v && python --version && ffmpeg -version')}
+        />
+      );
+      break;
+    case 'library':
+      content = (
+        <LibraryPage
+          board={board}
+          loading={loadingBoard}
+          currentId={card?.id}
+          onSelectLane={(lane) => persistBoard({ ...board, activeLane: lane })}
+          onOpenCard={(id) => selectCard(id, true)}
+          onToggleAudio={(id) => persistBoard(toggleCardAudioMode(board, id))}
+          onToggleAutoQueue={() => persistBoard({ ...board, autoQueue: !board.autoQueue })}
+          onNewShort={startNewShort}
+        />
+      );
+      break;
+    case 'topic':
+      content = (
+        <TopicPage
           language={scriptLang}
           niche={niche}
           customNiche={customNiche}
-          topics={flowTopics}
-          selectedTopic={selectedTopic}
-          scriptDraft={scriptDraft}
-          rigMode={flowRigMode}
-          rigs={rigs}
-          activeCli={activeCli}
-          autoQueue={board.autoQueue}
-          createdCard={flowCreatedCard}
-          voUploadStatus={voUploadStatus}
-          cliStatusText={cliStatusText}
-          copiedKey={copiedKey}
-          getMediaUrl={backend.mediaUrl}
-          onStepChange={(nextStep) => {
-            if (nextStep === 'studio') {
-              setViewMode('workbench');
-            } else {
-              setStoryStep(nextStep);
-            }
-          }}
-          onLanguageChange={handleFlowLanguageChange}
-          onSelectNiche={handleFlowSelectNiche}
+          topics={topics}
+          onLanguageChange={setScriptLang}
+          onNicheChange={setNiche}
           onCustomNicheChange={setCustomNiche}
-          onSelectTopic={handleFlowSelectTopic}
-          onScriptChange={setScriptDraft}
-          onRigModeChange={handleFlowRigChange}
-          onAskAiTop10={handleAskAiTop10}
-          onSaveScriptAndContinue={handleSaveScriptAndContinue}
-          onUploadVoiceFile={handleUploadVoiceFile}
-          onSkipToNoVo={handleSkipToNoVo}
-          onEnterWorkbench={() => {
-            if (flowCreatedCard) {
-              persistBoard({
-                ...board,
-                activeLane: flowCreatedCard.lane,
-                selectedCardId: flowCreatedCard.id,
-              });
-            }
-            setViewMode('workbench');
-          }}
-          onCopy={handleCopy}
+          onSelectTopic={handleSelectTopic}
+          onSend={sendToAgent}
         />
-      ) : (
-        <div className="tf-grid">
-        <ContentBankPane
-          board={board}
-          loading={loadingBoard}
-          selectedCard={selectedCard}
-          newCardTitle={newCardTitle}
-          onNewCardTitleChange={setNewCardTitle}
-          onCreateCard={handleCreateCard}
-          onToggleAutoQueue={() => persistBoard({ ...board, autoQueue: !board.autoQueue })}
-          onSelectLane={(lane) => persistBoard({ ...board, activeLane: lane })}
-          onSelectCard={(cardId) => {
-            setPctOverride(null);
-            setQaOverride(null);
-            persistBoard({ ...board, selectedCardId: cardId });
+      );
+      break;
+    case 'script':
+      content = (
+        <ScriptPage
+          card={card}
+          isDraft={isDraft}
+          title={draftTitle ?? card?.title ?? ''}
+          text={scriptText}
+          loading={scriptLoading && !isDraft}
+          saveState={saveState}
+          language={scriptLang}
+          canRelocalize={Boolean(selectedTopic)}
+          onTitleChange={setDraftTitle}
+          onTextChange={(v) => {
+            setScriptText(v);
+            if (saveState !== 'idle') setSaveState('idle');
           }}
-          onToggleCardMode={(cardId) => persistBoard(toggleCardAudioMode(board, cardId))}
+          onLanguageChange={handleDraftLanguage}
+          onSave={handleSaveScript}
+          onSend={sendToAgent}
+          onNavigate={nav}
         />
-
-        <StageInspectorPane
-          selectedCard={selectedCard}
-          rigs={rigs}
-          branch={env?.branch}
-          stageView={stageView}
+      );
+      break;
+    case 'voice':
+      content = (
+        <VoicePage
+          card={card}
+          narration={narration}
+          uploadStatus={uploadStatus}
           getMediaUrl={backend.mediaUrl}
-          onLoadScript={backend.getCardScript}
-          onSaveScript={backend.saveCardScript}
-          onChangeStageView={setStageView}
-          onChangeRig={handleRigChange}
-          onCheckStills={handleStills}
-          onRunQa={handleRunQa}
-          onAppendLog={appendLog}
+          onUpload={handleUpload}
+          onNoVoice={handleNoVoice}
+          onSend={sendToAgent}
+          onNavigate={nav}
         />
+      );
+      break;
+    case 'scenes':
+      content = (
+        <ScenesPage
+          card={card}
+          rigs={rigs}
+          busy={busyAction === 'typecheck'}
+          getMediaUrl={backend.mediaUrl}
+          onRigChange={(rig) => card && persistBoard(setCardRig(board, card.id, rig))}
+          onTypecheck={() => runAction('typecheck')}
+          onSend={sendToAgent}
+          onNavigate={nav}
+        />
+      );
+      break;
+    case 'sound':
+      content = <SoundPage card={card} getMediaUrl={backend.mediaUrl} onSend={sendToAgent} onNavigate={nav} />;
+      break;
+    case 'look':
+      content = (
+        <LookPage card={card} busy={busyAction === 'stills'} getMediaUrl={backend.mediaUrl} onRunStills={() => runAction('stills')} onSend={sendToAgent} onNavigate={nav} />
+      );
+      break;
+    case 'render':
+      content = (
+        <RenderPage card={card} busy={busyAction === 'render'} getMediaUrl={backend.mediaUrl} onRender={() => runAction('render')} onSend={sendToAgent} onNavigate={nav} />
+      );
+      break;
+  }
 
-        <PipelineAndCliPane
-          selectedCard={selectedCard}
-          qaOverride={qaOverride}
-          pctOverride={pctOverride}
+  return (
+    <div id="studio-frame" data-mode={theme} className={dockOpen ? 'has-dock' : undefined}>
+      <Sidebar
+        page={page}
+        cards={board.cards}
+        currentCard={card}
+        draftTitle={draftTitle}
+        reqReady={reqReady}
+        reqTotal={reqTotal}
+        branch={env?.branch}
+        syncState={syncState}
+        theme={theme}
+        dockOpen={dockOpen}
+        onNavigate={nav}
+        onSelectCard={(id) => selectCard(id)}
+        onNewShort={startNewShort}
+        onSync={handleSync}
+        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        onToggleDock={() => setDockOpen((o) => !o)}
+      />
+      <main className="main" key={page}>
+        {content}
+      </main>
+      {dockOpen && (
+        <AgentDock
           activeCli={activeCli}
           probes={probes}
-          cliInput={cliInput}
-          cliLogs={cliLogs}
-          onCliInputChange={setCliInput}
-          onSelectCli={(cli) => {
-            setActiveCli(cli);
-            appendLog(`${cli} > selected (${AI_PROVIDER_GUIDES[cli].accountReq})`);
-          }}
-          onCopyOrPrepareCli={(cmdText, key) => {
-            setCliInput(cmdText);
-            handleCopy(key, cmdText);
-          }}
-          onSubmitCli={handleCliSubmit}
-          onGuidedStep={handleGuidedStep}
-          onVerifyTypecheck={handleVerifyTypecheck}
+          input={cliInput}
+          logs={cliLogs}
+          running={cliRunning}
+          onSelectCli={setActiveCli}
+          onInputChange={setCliInput}
+          onSubmit={handleCliSubmit}
+          onClose={() => setDockOpen(false)}
         />
-        </div>
       )}
-
-      <IconPickerDialog dialogRef={logoDialogRef} activeLogo={activeLogo} onSelectLogo={setActiveLogo} />
-
-      <SetupWizardDialog
-        dialogRef={setupDialogRef}
-        videoReqs={videoReqs}
-        setupTab={setupTab}
-        activeCli={activeCli}
-        aiSetupPrompt={aiSetupPrompt}
-        manualCommands={manualCommands}
-        copiedKey={copiedKey}
-        onChangeTab={setSetupTab}
-        onCopy={handleCopy}
-        onLoadPromptInCli={() => {
-          setupDialogRef.current?.close();
-          setCliInput(aiSetupPrompt);
-          appendLog(`${activeCli} > loaded video-stack setup prompt`);
-        }}
-        onVerifyVideoStack={async () => {
-          setupDialogRef.current?.close();
-          try {
-            const res = await backend.execCliCommand('shell', 'node -v && python --version && ffmpeg -version');
-            appendLog(res.stdout || res.stderr || 'preflight checked');
-          } catch (err: unknown) {
-            appendLog(`preflight error > ${errorMessage(err)}`);
-          }
-        }}
-      />
     </div>
   );
 }

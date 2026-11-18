@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { handleApiRequest } from '../../server/bridge.mjs';
+import { AI_ENGINE_ARGS, installCommand } from '../../server/services/jobRunner.mjs';
+import { probeSkill } from '../../server/services/workspaceService.mjs';
 
 const realRepoRoot = path.resolve(import.meta.dirname, '../../..');
 
@@ -63,6 +65,7 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(data.probes.some((p) => p.id === 'chromium')).toBe(true);
     expect(data.probes.some((p) => p.id === 'agy')).toBe(true);
     expect(data.probes.some((p) => p.id === 'claude')).toBe(true);
+    expect(data.probes.some((p) => p.id === 'skill')).toBe(true);
   });
 
   it('GET /api/board against real repo enriches cards with real script, voice, audio mix, QA loudness, and video paths', async () => {
@@ -216,16 +219,67 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(JSON.parse(savedRaw).autoQueue).toBe(false);
   });
 
-  it('POST /api/cli/exec runs workspace commands and returns stdout', async () => {
-    const res = await fetch(`${realSrv.baseUrl}/api/cli/exec`, {
+  const exec = (engine: string, command: string) =>
+    fetch(`${realSrv.baseUrl}/api/cli/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ engine: 'agy', command: 'node -e "console.log(\'toonforge-ok\')"' }),
+      body: JSON.stringify({ engine, command }),
     });
+
+  it('POST /api/cli/exec runs shell commands only for engine "shell"', async () => {
+    const res = await exec('shell', 'node -e "console.log(1+41)"');
     expect(res.status).toBe(200);
     const data = (await res.json()) as { ok: boolean; stdout: string };
     expect(data.ok).toBe(true);
-    expect(data.stdout).toContain('toonforge-ok');
+    expect(data.stdout).toContain('42');
+  });
+
+  it('POST /api/cli/exec sends an Antigravity prompt to agy only, never to the shell', async () => {
+    const savedPath = process.env.PATH;
+    process.env.PATH = ''; // no agy on PATH, so nothing real runs
+    try {
+      const res = await exec('agy', 'node -e "console.log(1+41)"');
+      const data = (await res.json()) as { ok: boolean; stdout: string; stderr: string; engine: string };
+      expect(data.engine).toBe('agy');
+      expect(data.ok).toBe(false);
+      expect(data.stdout).not.toContain('42');
+      expect(data.stderr).toMatch(/agy/);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    expect(AI_ENGINE_ARGS.agy('hi')).toEqual({ bin: 'agy', args: ['--mode', 'accept-edits', '-p', 'hi'] });
+    expect(AI_ENGINE_ARGS.claude('hi')).toEqual({ bin: 'claude', args: ['-p', 'hi'] });
+  });
+
+  it('POST /api/cli/exec rejects an unknown engine', async () => {
+    const res = await exec('[agy]', 'echo hi');
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /api/tools/install only runs installers from the fixed server-side list', async () => {
+    const res = await fetch(`${realSrv.baseUrl}/api/tools/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'rm -rf /' }),
+    });
+    expect(res.status).toBe(400);
+    expect(installCommand('claude')).toBe('npm install -g @anthropic-ai/claude-code');
+    expect(installCommand('git', 'win32')).toMatch(/^winget install -e --id Git\.Git /);
+    expect(installCommand('git', 'linux')).toBeUndefined();
+    expect(installCommand('toString')).toBeUndefined();
+  });
+
+  it('probeSkill finds SKILL.md under either install folder name', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'toonforge-home-'));
+    try {
+      expect((await probeSkill(home)).installed).toBe(false);
+      await fs.mkdir(path.join(home, '.claude', 'skills', 'claude-animated-shorts'), { recursive: true });
+      await fs.writeFile(path.join(home, '.claude', 'skills', 'claude-animated-shorts', 'SKILL.md'), '# skill');
+      const probe = await probeSkill(home);
+      expect(probe).toMatchObject({ id: 'skill', installed: true, version: '~/.claude/skills/claude-animated-shorts' });
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
   });
 
   it('POST /api/cards writes provided custom scriptContent into SCRIPT_<SLUG>.md', async () => {

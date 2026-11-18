@@ -80,6 +80,87 @@ fn probe_chromium(root: &Path) -> EnvProbe {
     }
 }
 
+/// Looks for the claude-animated-shorts SKILL.md under ~/.claude/skills (README name, then repo name).
+fn probe_skill() -> EnvProbe {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    let found = home.and_then(|h| {
+        ["cartoon-3d-short", "claude-animated-shorts"]
+            .into_iter()
+            .find(|d| Path::new(&h).join(".claude").join("skills").join(d).join("SKILL.md").exists())
+    });
+    EnvProbe {
+        id: "skill".to_string(),
+        name: "claude-animated-shorts skill".to_string(),
+        installed: found.is_some(),
+        version: found.map(|d| format!("~/.claude/skills/{d}")),
+        role: "The pipeline, templates and references your agent follows (SKILL.md)".to_string(),
+        install_cmd: "git clone https://github.com/mromidev/claude-animated-shorts ~/.claude/skills/cartoon-3d-short".to_string(),
+    }
+}
+
+/// Fixed one-click install command per probe id. Mirrors INSTALLERS in server/services/jobRunner.mjs.
+fn install_command(id: &str) -> Option<&'static str> {
+    let win = cfg!(target_os = "windows");
+    match id {
+        "git" if win => Some("winget install -e --id Git.Git --silent --accept-source-agreements --accept-package-agreements"),
+        "node" if win => Some("winget install -e --id OpenJS.NodeJS.LTS --silent --accept-source-agreements --accept-package-agreements"),
+        "python" if win => Some("winget install -e --id Python.Python.3.12 --silent --accept-source-agreements --accept-package-agreements"),
+        "ffmpeg" if win => Some("winget install -e --id Gyan.FFmpeg --silent --accept-source-agreements --accept-package-agreements"),
+        "py_deps" => Some("python -m pip install numpy pillow"),
+        "chromium" => Some("npx remotion browser ensure"),
+        "claude" => Some("npm install -g @anthropic-ai/claude-code"),
+        "codex" => Some("npm install -g @openai/codex"),
+        "opencode" => Some("npm install -g opencode-ai"),
+        _ => None,
+    }
+}
+
+fn last_lines(out: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(out);
+    let lines: Vec<String> = text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    lines[lines.len().saturating_sub(6)..].to_vec()
+}
+
+// async so a long install runs off the UI thread; async commands that borrow State must return Result.
+#[tauri::command]
+pub async fn install_tool(state: State<'_, WorkspaceState>, id: String) -> Result<SyncResult, String> {
+    Ok(install_tool_blocking(&state.root, &id))
+}
+
+fn install_tool_blocking(root: &Path, id: &str) -> SyncResult {
+    let output = if id == "skill" {
+        let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
+            return SyncResult { ok: false, lines: vec!["Could not find your home folder.".into()] };
+        };
+        let dest = Path::new(&home).join(".claude").join("skills").join("cartoon-3d-short");
+        if dest.join("SKILL.md").exists() {
+            return SyncResult { ok: true, lines: vec!["Skill is already installed.".into()] };
+        }
+        let _ = std::fs::create_dir_all(dest.parent().unwrap_or(&dest));
+        Command::new("git")
+            .args(["clone", "--depth", "1", "https://github.com/mromidev/claude-animated-shorts"])
+            .arg(&dest)
+            .output()
+    } else {
+        let Some(cmd) = install_command(id) else {
+            return SyncResult { ok: false, lines: vec![format!("No automatic installer for \"{id}\" on this system.")] };
+        };
+        if cfg!(target_os = "windows") {
+            Command::new("cmd").args(["/C", cmd]).current_dir(root).output()
+        } else {
+            Command::new("sh").args(["-c", cmd]).current_dir(root).output()
+        }
+    };
+    match output {
+        Ok(out) => {
+            let mut lines = last_lines(&out.stdout);
+            lines.extend(last_lines(&out.stderr));
+            SyncResult { ok: out.status.success(), lines }
+        }
+        Err(err) => SyncResult { ok: false, lines: vec![err.to_string()] },
+    }
+}
+
 #[tauri::command]
 pub fn check_environment(state: State<'_, WorkspaceState>) -> EnvStatus {
     let probes = vec![
@@ -93,6 +174,7 @@ pub fn check_environment(state: State<'_, WorkspaceState>) -> EnvStatus {
         probe_binary("claude", "Claude Code CLI", "claude", &["--version"], "Anthropic CLI agent (requires Claude Pro/Max or API key)", "npm install -g @anthropic-ai/claude-code"),
         probe_binary("codex", "Codex CLI", "codex", &["--version"], "OpenAI CLI agent (requires ChatGPT Plus/Pro or OPENAI_API_KEY)", "npm install -g @openai/codex"),
         probe_binary("opencode", "OpenCode CLI", "opencode", &["--version"], "Open-source BYOK CLI agent (Gemini / OpenRouter / Ollama)", "npm install -g opencode-ai"),
+        probe_skill(),
     ];
 
     let branch = Command::new("git")

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
 import type { BoardState, EnvStatus, RigSummary, ScriptDoc } from '../lib/domain';
@@ -17,6 +17,7 @@ const mockEnv: EnvStatus = {
     { id: 'claude', name: 'Claude Code CLI', installed: false, role: 'Requires Claude Pro/Max', installCmd: 'npm install -g @anthropic-ai/claude-code' },
     { id: 'codex', name: 'Codex CLI', installed: false, role: 'Requires ChatGPT Plus', installCmd: 'npm install -g @openai/codex' },
     { id: 'opencode', name: 'OpenCode CLI', installed: false, role: 'Open-source BYOK CLI', installCmd: 'npm install -g opencode-ai' },
+    { id: 'skill', name: 'claude-animated-shorts skill', installed: true, version: '~/.claude/skills/cartoon-3d-short', role: 'The pipeline your agent follows', installCmd: 'git clone ...' },
   ],
 };
 
@@ -74,7 +75,7 @@ const initialBoard: BoardState = {
 };
 
 vi.mock('../lib/backend', () => ({
-  getEnvStatus: vi.fn(async () => mockEnv),
+  getEnvStatus: vi.fn(async () => structuredClone(mockEnv)),
   getRigs: vi.fn(async () => mockRigs),
   loadBoard: vi.fn(async () => structuredClone(initialBoard)),
   saveBoard: vi.fn(async (board: BoardState) => board),
@@ -129,6 +130,10 @@ vi.mock('../lib/backend', () => ({
       ...initialBoard.cards,
     ],
   })),
+  installTool: vi.fn(async (id: string) => {
+    mockEnv.probes = mockEnv.probes.map((p) => (p.id === id ? { ...p, installed: true, version: 'PATH ready' } : p));
+    return { ok: true, lines: [`${id} installed`] };
+  }),
   syncRepo: vi.fn(async () => ({ ok: true, lines: ['working tree clean · main'] })),
   runPipeline: vi.fn(async () => ({ ok: true, step: 'qa', completionPct: 100, lines: ['SPECS 1440x2560 OK', 'QA Pass'] })),
   execCliCommand: vi.fn(async (_engine: string, cmd: string) => ({
@@ -139,140 +144,103 @@ vi.mock('../lib/backend', () => ({
   mediaUrl: vi.fn((relPath: string) => `/api/media?path=${encodeURIComponent(relPath)}`),
 }));
 
-describe('ToonForge Full-Stack Modular Studio UI', () => {
-  it('guides new users through animated 5-Step Story Flow: Intro + Language -> Crime Top 10 -> Script -> ElevenLabs VO -> Workbench', async () => {
-    render(<App />);
-    await waitFor(() => expect(screen.getByText(/What is ToonForge\?/i)).toBeInTheDocument());
 
-    // First-place required language picker (Taglish / Pure Tagalog / English) + Niche Cards
-    expect(screen.getByRole('button', { name: /^Taglish$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Pure Tagalog$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^English$/i })).toBeInTheDocument();
-    expect(screen.getByText('Crime Scene & Mystery')).toBeInTheDocument();
-    expect(screen.getByText('Night Shift & Horror')).toBeInTheDocument();
-    expect(screen.getByText('Tech & System Design')).toBeInTheDocument();
-    expect(screen.getByText('Custom Niche')).toBeInTheDocument();
+async function renderApp() {
+  render(<App />);
+  // Wait for the workspace (board + probes) to load.
+  await waitFor(() => expect(screen.getByRole('combobox', { name: /Current short/i })).toHaveValue('dbindex'));
+}
 
-    // Select Pure Tagalog first, then choose Crime Scene & Mystery niche card
-    fireEvent.click(screen.getByRole('button', { name: /^Pure Tagalog$/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Crime Scene & Mystery/i }));
+const nav = (name: RegExp) => fireEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('button', { name }));
 
-    // Step 2: Software Topic Bank (Top 10 GUI + ready AI prompt)
-    await waitFor(() => expect(screen.getByText(/Software Topic Bank/i)).toBeInTheDocument());
-    expect(screen.getByText('#01')).toBeInTheDocument();
-    expect(screen.getByText('#10')).toBeInTheDocument();
-    expect(screen.getByText(/The Locked Apartment Keyhole Mystery/i)).toBeInTheDocument();
-
-    // Pick Topic #1 -> transitions to Script Studio with Pure Tagalog + [SFX] cues
-    fireEvent.click(screen.getByRole('button', { name: /The Locked Apartment Keyhole Mystery/i }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: /Script Studio/i })).toBeInTheDocument());
-    const scriptArea = document.querySelector('textarea') as HTMLTextAreaElement | null;
-    expect(scriptArea?.value).toContain('Language: Pure Tagalog');
-    expect(scriptArea?.value).toContain('[SFX:');
-
-    // Save Script & continue to ElevenLabs / Voiceover GUI
-    fireEvent.click(screen.getByRole('button', { name: /Save Script & Go to VO/i }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: /ElevenLabs \/ Voiceover Studio/i })).toBeInTheDocument());
-
-    // Clean narration strips [SFX:] tags for ElevenLabs paste
-    const cleanBox = document.querySelector('[data-testid="clean-vo-text"]') as HTMLElement | null;
-    expect(cleanBox?.textContent).not.toContain('[SFX:');
-    expect(cleanBox?.textContent).toContain('Nakakandado mula sa loob');
-
-    // Upload WAV audio or proceed to Workbench
-    const fileInput = document.querySelector('input[type="file"][accept=".wav,.mp3"]') as HTMLInputElement;
-    const mockFile = new File(['RIFF0000WAVE'], 'crime_vo.wav', { type: 'audio/wav' });
-    fireEvent.change(fileInput, { target: { files: [mockFile] } });
-
-    await waitFor(() => expect(screen.getByText(/VO Attached/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Open 3D Workbench/i }));
-    await waitFor(() => expect(screen.getByText('Content Bank')).toBeInTheDocument());
+describe('ToonForge studio shell', () => {
+  it('opens on an introduction that explains the skill pipeline and requirement status', async () => {
+    await renderApp();
+    expect(screen.getByRole('heading', { name: /Animated story shorts/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'claude-animated-shorts' })).toHaveAttribute('href', expect.stringContaining('mromidev/claude-animated-shorts'));
+    expect(screen.getByText(/Everything needed to render is installed/i)).toBeInTheDocument();
+    for (const step of ['Topic', 'Script', 'Voice', 'Scenes', 'Sound', 'Look check', 'Render & QA']) {
+      expect(screen.getAllByRole('button', { name: new RegExp(`^${step.replace('&', '\&')}`) }).length).toBeGreaterThan(0);
+    }
   });
 
-  it('toggles Light/Dark monochrome themes and renders real workspace card telemetry', async () => {
-    render(<App />);
-    await screen.findByText(/What is ToonForge\?/i);
-    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
-    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
-    expect(screen.getAllByText(/-15\.1 LUFS/i).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/100%/)).toBeInTheDocument();
+  it('shows how to use and the requirements with install commands', async () => {
+    await renderApp();
+    nav(/How to use/);
+    expect(screen.getByRole('heading', { name: /Install the skill/i })).toBeInTheDocument();
+    expect(screen.getAllByText(/git clone https:\/\/github.com\/mromidev\/claude-animated-shorts/).length).toBeGreaterThan(0);
 
-    const frame = document.getElementById('studio-frame');
-    expect(frame).toHaveAttribute('data-mode', 'dark');
-    fireEvent.click(screen.getByRole('button', { name: /Light/i }));
-    expect(frame).toHaveAttribute('data-mode', 'light');
-  });
-
-  it('shows live icon samples inside Choose Icon dialog and video-creation dependencies inside Setup Guide', async () => {
-    render(<App />);
-    await screen.findByText(/What is ToonForge\?/i);
-    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
-    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: /Compare/i }));
-    expect(screen.getByText('Live Icon Sample')).toBeInTheDocument();
-    expect(screen.getByText('App Dock')).toBeInTheDocument();
-    expect(screen.getByText('9:16 Short')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Apply Icon/i }));
-
-    fireEvent.click(screen.getByRole('button', { name: /Setup Guide/i }));
-    expect(screen.getByText(/Needed to Create Videos/i)).toBeInTheDocument();
-    expect(document.querySelector('.req-list')?.textContent).toMatch(/NumPy \+ Pillow/i);
-    expect(screen.getByText(/Headless WebGL engine/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Manual Terminal/i }));
+    nav(/Requirements/);
+    expect(screen.getByText('NumPy + Pillow')).toBeInTheDocument();
+    expect(screen.getByText('Claude Code CLI')).toBeInTheDocument();
+    expect(screen.getByText('claude-animated-shorts skill')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: /Run commands yourself/i }));
     expect(screen.getByText(/pip install numpy pillow/i)).toBeInTheDocument();
   });
 
-  it('switches Center Stage across Real Chibi PNG Sprite Compositor, Video player, Stills strip, and live Script/Audio editor', async () => {
-    render(<App />);
-    await screen.findByText(/What is ToonForge\?/i);
-    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
-    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
+  it('installs a missing agent from the Requirements list without a terminal', async () => {
+    await renderApp();
+    nav(/Requirements/);
+    const install = screen.getByRole('button', { name: 'Install Codex CLI' });
+    expect(screen.getAllByText('Optional').length).toBeGreaterThan(0);
+    fireEvent.click(install);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Install Codex CLI' })).not.toBeInTheDocument());
+    expect(screen.getAllByText('Installed').length).toBeGreaterThan(8);
+  });
 
+  it('walks a new short from topic to script to voice', async () => {
+    await renderApp();
+    fireEvent.click(screen.getByRole('button', { name: 'New short' }));
+    expect(screen.getByRole('heading', { name: /1\. Topic/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /The Locked Apartment Keyhole Mystery/i }));
+
+    expect(screen.getByRole('heading', { name: /2\. Script/ })).toBeInTheDocument();
+    expect((screen.getByRole('textbox', { name: 'Script' }) as HTMLTextAreaElement).value).toContain('[SFX:');
+    expect(screen.getByText(/Estimated length/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Save short/i }));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: /3\. Voice/ })).toBeInTheDocument());
+    expect(screen.getByTestId('clean-vo-text').textContent).not.toContain('[SFX:');
+    const file = new File(['RIFF0000WAVE'], 'crime_vo.wav', { type: 'audio/wav' });
+    fireEvent.change(screen.getByLabelText('Voice file'), { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByText(/Attached crime_vo\.wav/i)).toBeInTheDocument());
+  });
+
+  it('shows saved artifacts on scene, look check, and render steps', async () => {
+    await renderApp();
+    nav(/^Scenes/);
     expect(document.querySelector('img[src*="sprites%2Fidle.png"]')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Video$/i }));
-    expect(document.querySelector('video')?.getAttribute('src')).toContain('out%2Fdbindex%2Fdbindex_2k.mp4');
-
-    fireEvent.click(screen.getByRole('button', { name: /^Stills$/i }));
+    nav(/^Look check/);
     expect(document.querySelector('img[src*="sheet_0000.jpg"]')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Script$/i }));
-    await waitFor(() => {
-      const ta = document.querySelector('textarea') as HTMLTextAreaElement | null;
-      expect(ta?.value).toContain('B-Tree');
-    });
-    expect(document.querySelector('audio[src*="mix_dbindex.wav"]')).toBeInTheDocument();
+    nav(/^Render/);
+    expect(document.querySelector('video')?.getAttribute('src')).toContain('out%2Fdbindex%2Fdbindex_2k.mp4');
+    expect(screen.getByText('-15.1 LUFS')).toBeInTheDocument();
   });
 
-  it('explains AI CLI account requirements clearly and builds per-card guided prompts', async () => {
-    render(<App />);
-    await screen.findByText(/What is ToonForge\?/i);
-    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
-    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
-
-    expect(document.querySelector('.ai-guide-bar')?.textContent).toMatch(/Built-in with Antigravity IDE/i);
-
-    fireEvent.click(screen.getByRole('button', { name: /Claude/i }));
-    expect(document.querySelector('.ai-guide-bar')?.textContent).toMatch(/Requires Claude Pro \/ Max account/i);
-
-    fireEvent.click(screen.getByRole('button', { name: /2\. Audio Mix/i }));
-    await waitFor(() => {
-      expect(document.querySelector('.cli-log')?.textContent).toMatch(/audio\/mix_dbindex\.py/i);
-    });
+  it('sends a step prompt to the agent terminal and explains each agent', async () => {
+    await renderApp();
+    nav(/^Sound/);
+    fireEvent.click(screen.getByRole('button', { name: /Send to agent/i }));
+    const prompt = screen.getByRole('textbox', { name: 'Agent prompt' }) as HTMLTextAreaElement;
+    expect(prompt.value).toMatch(/audio\/mix_dbindex\.wav/);
+    expect(screen.getByText(/Requires Claude Pro \/ Max account/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'Codex' }));
+    expect(screen.getByText(/Requires ChatGPT Plus/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/ }));
+    await waitFor(() => expect(document.querySelector('.log')?.textContent).toMatch(/executed: Use the cartoon short skill/));
   });
 
-  it('auto-queues Backlog cards when toggled to VO Ready while Auto-Q is ON', async () => {
-    render(<App />);
-    await screen.findByText(/What is ToonForge\?/i);
-    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
-    await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
+  it('auto-queues a backlog short when its voice is marked ready, and toggles theme', async () => {
+    await renderApp();
+    nav(/All shorts/);
+    fireEvent.click(screen.getByRole('tab', { name: /Backlog/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Needs voice/i }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Queued/i })).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.getAllByRole('button', { name: /Voice ready/i })).toHaveLength(2);
 
-    fireEvent.click(screen.getByRole('button', { name: /Backlog/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Needs VO/i }));
-    await waitFor(() => {
-      expect(screen.getByText('Async Job Queues')).toBeInTheDocument();
-      expect(screen.getAllByRole('button', { name: /VO Ready/i })).toHaveLength(2);
-    });
+    const frame = document.getElementById('studio-frame');
+    expect(frame).toHaveAttribute('data-mode', 'dark');
+    fireEvent.click(screen.getByRole('button', { name: /Switch to light theme/i }));
+    expect(frame).toHaveAttribute('data-mode', 'light');
   });
 });

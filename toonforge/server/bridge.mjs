@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execWorkspaceCommand, runPipelineAction, runSyncRepo } from './services/jobRunner.mjs';
+import { execWorkspaceCommand, installTool, runPipelineAction, runSyncRepo } from './services/jobRunner.mjs';
 import {
   createCardAndScript,
   fileExists,
@@ -175,6 +175,10 @@ export async function handleApiRequest(req, res, repoRoot) {
     if (method === 'POST' && route === '/cli/exec') {
       const { command, engine } = await readJsonBody(req);
       return sendJson(res, 200, await execWorkspaceCommand(repoRoot, engine, command));
+    }
+    if (method === 'POST' && route === '/tools/install') {
+      const { id } = await readJsonBody(req);
+      return sendJson(res, 200, await installTool(repoRoot, id));
     }
     if (method === 'POST' && route === '/pipeline/run') {
       const { slug, action } = await readJsonBody(req);

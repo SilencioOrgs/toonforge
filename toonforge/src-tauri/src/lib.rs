@@ -40,6 +40,7 @@ pub fn run() {
             get_workspace_root,
             git_sync::check_environment,
             git_sync::sync_repo,
+            git_sync::install_tool,
             board_watch::load_board,
             board_watch::save_board,
             board_watch::create_card,

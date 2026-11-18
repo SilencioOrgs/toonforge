@@ -112,6 +112,12 @@ export async function syncRepo(): Promise<{ ok: boolean; lines: string[] }> {
   return httpJson<{ ok: boolean; lines: string[] }>('/api/sync', { method: 'POST', body: '{}' });
 }
 
+/** Installs one required tool by its probe id; the backend owns the actual command. */
+export async function installTool(id: string): Promise<{ ok: boolean; lines: string[] }> {
+  if (isTauriRuntime()) return tauriInvoke<{ ok: boolean; lines: string[] }>('install_tool', { id });
+  return httpJson<{ ok: boolean; lines: string[] }>('/api/tools/install', { method: 'POST', body: JSON.stringify({ id }) });
+}
+
 export async function runPipeline(
   slug: string,
   action: 'stills' | 'render' | 'typecheck',

@@ -1,5 +1,6 @@
 import { exec, execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -13,12 +14,59 @@ import {
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
 
-const AI_ENGINE_ARGS = {
+// Non-interactive "run one prompt" form of each agent CLI.
+export const AI_ENGINE_ARGS = {
   claude: (prompt) => ({ bin: 'claude', args: ['-p', prompt] }),
   codex: (prompt) => ({ bin: 'codex', args: ['exec', prompt] }),
   opencode: (prompt) => ({ bin: 'opencode', args: ['run', prompt] }),
-  agy: (prompt) => ({ bin: 'agy', args: ['chat', prompt] }),
+  agy: (prompt) => ({ bin: 'agy', args: ['--mode', 'accept-edits', '-p', prompt] }),
 };
+
+// One-click installers, keyed by probe id. The client only ever sends an id; commands are fixed here.
+const WINGET = (pkg) => `winget install -e --id ${pkg} --silent --accept-source-agreements --accept-package-agreements`;
+const INSTALLERS = {
+  git: { win32: WINGET('Git.Git') },
+  node: { win32: WINGET('OpenJS.NodeJS.LTS') },
+  python: { win32: WINGET('Python.Python.3.12') },
+  ffmpeg: { win32: WINGET('Gyan.FFmpeg') },
+  py_deps: { any: 'python -m pip install numpy pillow' },
+  chromium: { any: 'npx remotion browser ensure' },
+  claude: { any: 'npm install -g @anthropic-ai/claude-code' },
+  codex: { any: 'npm install -g @openai/codex' },
+  opencode: { any: 'npm install -g opencode-ai' },
+};
+export const SKILL_REPO = 'https://github.com/mromidev/claude-animated-shorts';
+const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
+
+export function installCommand(id, platform = process.platform) {
+  const entry = Object.hasOwn(INSTALLERS, id) ? INSTALLERS[id] : undefined;
+  return entry?.any ?? (platform === 'win32' ? entry?.win32 : undefined);
+}
+
+const tail = (text) => String(text || '').trim().split(/\r?\n/).filter(Boolean).slice(-6);
+
+export async function installTool(repoRoot, id, home = os.homedir()) {
+  if (id === 'skill') {
+    const dest = path.join(home, '.claude', 'skills', 'cartoon-3d-short');
+    if (await fileExists(path.join(dest, 'SKILL.md'))) return { ok: true, id, lines: ['Skill is already installed.'] };
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    try {
+      const { stdout, stderr } = await execFileAsync('git', ['clone', '--depth', '1', SKILL_REPO, dest], { timeout: INSTALL_TIMEOUT_MS });
+      return { ok: true, id, lines: [...tail(stdout), ...tail(stderr), `Installed to ${dest}`] };
+    } catch (err) {
+      return { ok: false, id, lines: tail(err?.stderr || err?.message || err) };
+    }
+  }
+  const cmd = installCommand(id);
+  if (!cmd) throw new ValidationError(`No automatic installer for "${String(id || '')}" on this system`, 400);
+  try {
+    const { stdout, stderr } = await execAsync(cmd, { cwd: repoRoot, timeout: INSTALL_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    return { ok: true, id, lines: [...tail(stdout), ...tail(stderr)] };
+  } catch (err) {
+    return { ok: false, id, lines: [...tail(err?.stdout), ...tail(err?.stderr || err?.message || err)] };
+  }
+}
+const AGENT_TIMEOUT_MS = 10 * 60 * 1000; // agent turns can take minutes
 
 export async function runSyncRepo(repoRoot) {
   try {
@@ -44,30 +92,33 @@ export async function execWorkspaceCommand(repoRoot, engine, command) {
     throw new ValidationError('Missing command', 400);
   }
 
-  const aiMatch = trimmed.match(/^\[(agy|claude|codex|opencode)[^\]]*\]\s*(.+)$/is);
-  if (aiMatch && AI_ENGINE_ARGS[aiMatch[1].toLowerCase()]) {
-    const eng = aiMatch[1].toLowerCase();
-    const spec = AI_ENGINE_ARGS[eng](aiMatch[2]);
+  // The selected engine alone decides where the text goes: an agent gets it as a prompt
+  // (never through a shell), and only engine "shell" runs it as a command.
+  if (Object.hasOwn(AI_ENGINE_ARGS, engine)) {
+    const spec = AI_ENGINE_ARGS[engine](trimmed);
     try {
-      const { stdout, stderr } = await execFileAsync(spec.bin, spec.args, { cwd: repoRoot, timeout: 25000 });
-      return { ok: true, engine: eng, stdout, stderr };
+      const { stdout, stderr } = await execFileAsync(spec.bin, spec.args, { cwd: repoRoot, timeout: AGENT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+      return { ok: true, engine, stdout, stderr };
     } catch (err) {
       return {
         ok: false,
-        engine: eng,
-        stdout: '',
-        stderr: `CLI "${spec.bin}" unavailable or failed: ${String(err?.stderr || err?.message || err)}`,
+        engine,
+        stdout: err?.stdout || '',
+        stderr: err?.code === 'ENOENT' ? `${spec.bin} is not installed or not on PATH.` : `${spec.bin} failed: ${String(err?.stderr || err?.message || err)}`,
       };
     }
+  }
+  if (engine !== 'shell') {
+    throw new ValidationError(`Unknown engine "${String(engine || '')}"`, 400);
   }
 
   try {
     const { stdout, stderr } = await execAsync(trimmed, { cwd: repoRoot, timeout: 15000 });
-    return { ok: true, engine: engine || 'shell', stdout, stderr };
+    return { ok: true, engine, stdout, stderr };
   } catch (err) {
     return {
       ok: false,
-      engine: engine || 'shell',
+      engine,
       stdout: err?.stdout || '',
       stderr: err?.stderr || String(err?.message || err),
     };
