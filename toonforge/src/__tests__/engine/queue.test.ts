@@ -325,7 +325,7 @@ describe('job queue', () => {
       await fs.writeFile(path.join(scene, 'story.ts'), 'half-edited');
       return { ok: false, events: [{ type: 'done', ok: false, text: 'crashed' }], tail: '' };
     });
-    makeQueue(agent, { ...fakeMedia(), snapshotScene });
+    makeQueue(agent, { ...fakeMedia(), snapshotScene } as any);
     const card = await addCard('r', {
       state: 'scene',
       notes: [{ at: 'x', text: 'bigger hero', previewVersion: 1 }],
