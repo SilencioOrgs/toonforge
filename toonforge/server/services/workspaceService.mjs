@@ -198,6 +198,9 @@ async function probeChromium(repoRoot) {
   return { id: 'chromium', name: 'Chromium / Chrome', installed: false };
 }
 
+// Probes run ~12 processes at once; a cold Windows start can take several seconds, so a tight timeout reports installed tools as missing.
+const PROBE_TIMEOUT_MS = 10000;
+
 async function probeTool(spec, repoRoot) {
   if (spec.chromiumCheck) {
     const res = await probeChromium(repoRoot);
@@ -206,7 +209,7 @@ async function probeTool(spec, repoRoot) {
   if (spec.whereOnly) {
     const cmd = process.platform === 'win32' ? 'where.exe' : 'which';
     try {
-      const { stdout } = await execFileAsync(cmd, [spec.bin], { timeout: 2500 });
+      const { stdout } = await execFileAsync(cmd, [spec.bin], { timeout: PROBE_TIMEOUT_MS });
       const line = stdout.trim().split(/\r?\n/)[0];
       return {
         id: spec.id,
@@ -221,7 +224,7 @@ async function probeTool(spec, repoRoot) {
     }
   }
   try {
-    const { stdout, stderr } = await execFileAsync(spec.bin, spec.args, { timeout: 3000 });
+    const { stdout, stderr } = await execFileAsync(spec.bin, spec.args, { timeout: PROBE_TIMEOUT_MS });
     const firstLine = `${stdout}\n${stderr}`.trim().split(/\r?\n/)[0]?.slice(0, 48);
     return {
       id: spec.id,

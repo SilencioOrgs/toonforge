@@ -57,7 +57,7 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(data.probes.some((p) => p.id === 'agy')).toBe(true);
     expect(data.probes.some((p) => p.id === 'claude')).toBe(true);
     expect(data.probes.some((p) => p.id === 'skill')).toBe(true);
-  });
+  }, 30000);
 
   it('rejects cross-origin simple CSRF, blocks non-media repo files, handles invalid Range/dir streams safely', async () => {
     const csrfRes = await fetch(`${realSrv.baseUrl}/api/tools/install`, {
