@@ -10,7 +10,8 @@ export const DEFAULT_CATEGORIES = [
 ];
 const CARD_STATES = ['script', 'voice', 'scene', 'sound', 'preview', 'review', 'render', 'done', 'failed'];
 const FILE = 'toonforge.json';
-const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+// Windows reserves these names even with an extension (CON.txt).
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 const shortsDir = (repoRoot) => path.join(repoRoot, 'shorts');
 const toRel = (...parts) => ['shorts', ...parts].join('/');
@@ -25,7 +26,7 @@ function resolveRel(repoRoot, relPath) {
 export function safeFolderName(name) {
   const cleaned = String(name ?? '')
     // eslint-disable-next-line no-control-regex
-    .replace(/[\/:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/[. ]+$/, '');
@@ -62,6 +63,7 @@ export async function createFolder(repoRoot, { category, name, agent }) {
   const catDir = def ? def.id : safeFolderName(category);
   const label = def ? def.label : catDir;
   const base = name && String(name).trim() ? safeFolderName(name) : safeFolderName(`${label} ${new Date().toISOString().slice(0, 10)}`);
+  resolveRel(repoRoot, toRel(catDir, base));
   const finalName = await mkdirUnique(path.join(shortsDir(repoRoot), catDir), base);
   const folder = {
     version: 1,
@@ -92,12 +94,15 @@ const chains = new Map();
 /** @param {string} repoRoot @param {string} relPath @param {(f: Folder) => Folder | void | Promise<Folder | void>} mutate @returns {Promise<Folder>} */
 export function updateFolder(repoRoot, relPath, mutate) {
   const abs = resolveRel(repoRoot, relPath);
-  const run = async () => {
+  return enqueue(abs, async () => {
     const folder = await readFolder(repoRoot, relPath);
     const next = (await mutate(folder)) ?? folder;
     await writeAtomic(path.join(abs, FILE), next);
     return next;
-  };
+  });
+}
+
+function enqueue(abs, run) {
   const prev = chains.get(abs) ?? Promise.resolve();
   const result = prev.then(run, run);
   const tail = result.catch(() => {});
@@ -110,15 +115,21 @@ export async function renameFolder(repoRoot, relPath, newName) {
   const abs = resolveRel(repoRoot, relPath);
   const safe = safeFolderName(newName);
   const dest = path.join(path.dirname(abs), safe);
-  if (dest !== abs && (await fileExists(dest))) throw new ValidationError(`A folder named "${safe}" already exists`, 409);
-  // Queue behind pending writes so none lands in the old path.
-  await (chains.get(abs) ?? Promise.resolve());
-  await fs.rename(abs, dest);
   const newRel = toRel(path.basename(path.dirname(abs)), safe);
-  await updateFolder(repoRoot, newRel, (f) => {
-    f.name = safe;
+  return enqueue(abs, async () => {
+    const caseOnly = dest.toLowerCase() === abs.toLowerCase();
+    if (!caseOnly && (await fileExists(dest))) throw new ValidationError(`A folder named "${safe}" already exists`, 409);
+    await fs.rename(abs, dest);
+    try {
+      const f = JSON.parse(await fs.readFile(path.join(dest, FILE), 'utf8'));
+      f.name = safe;
+      await writeAtomic(path.join(dest, FILE), f);
+    } catch (err) {
+      await fs.rename(dest, abs);
+      throw err;
+    }
+    return newRel;
   });
-  return newRel;
 }
 
 async function subdirs(dir) {

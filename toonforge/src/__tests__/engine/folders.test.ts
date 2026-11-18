@@ -97,4 +97,39 @@ describe('folder store', () => {
     expect(rel).toBe('shorts/tech/New');
     expect((await readFolder(tmp, rel)).name).toBe('New');
   });
+
+  it('blocks backslash and reserved-with-extension names, never escaping shorts/', async () => {
+    expect(safeFolderName('a\\b')).toBe('a b');
+    expect(safeFolderName('CON.txt')).toBe('_CON.txt');
+    expect(safeFolderName('nul.x')).toBe('_nul.x');
+    const f = await createFolder(tmp, { category: 'tech', name: '..\\..\\x', agent: 'claude' });
+    expect(f.name).toBe('.. .. x');
+    expect(await fs.readdir(path.join(tmp, 'shorts', 'tech'))).toEqual(['.. .. x']);
+    await expect(createFolder(tmp, { category: '..', name: 'x', agent: 'claude' })).rejects.toThrow();
+  });
+
+  it('suffixes to (3) and renameFolder handles collision, case-only rename and queued writes', async () => {
+    for (let i = 0; i < 3; i++) await createFolder(tmp, { category: 'tech', name: 'Night', agent: 'claude' });
+    expect(await fs.readdir(path.join(tmp, 'shorts', 'tech'))).toContain('Night (3)');
+    await expect(renameFolder(tmp, 'shorts/tech/Night', 'Night (2)')).rejects.toMatchObject({ status: 409 });
+    const rel = await renameFolder(tmp, 'shorts/tech/Night', 'night');
+    expect((await readFolder(tmp, rel)).name).toBe('night');
+    // the update is queued first, so the rename must wait for it
+    const [u, r] = await Promise.all([
+      updateFolder(tmp, 'shorts/tech/night', (f) => { f.cards.push({ id: 'c_1', state: 'script' }); }),
+      renameFolder(tmp, 'shorts/tech/night', 'Moved'),
+    ]);
+    expect(r).toBe('shorts/tech/Moved');
+    expect(u.cards).toHaveLength(1);
+    expect((await readFolder(tmp, r)).cards).toHaveLength(1);
+  });
+
+  it('uniqueSlug avoids out/ files and existing card slugs', async () => {
+    await fs.mkdir(path.join(tmp, 'out'), { recursive: true });
+    await fs.writeFile(path.join(tmp, 'out', 'binary.mp4'), '');
+    expect(await uniqueSlug(tmp, 'Binary')).toBe('binary2');
+    await createFolder(tmp, { category: 'tech', name: 'N', agent: 'claude' });
+    await updateFolder(tmp, 'shorts/tech/N', (f) => { f.cards.push({ id: 'c_1', state: 'script', slug: 'mine' }); });
+    expect(await uniqueSlug(tmp, 'Mine')).toBe('mine2');
+  });
 });
