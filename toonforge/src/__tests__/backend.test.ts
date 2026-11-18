@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { handleApiRequest } from '../../server/bridge.mjs';
-import { AI_ENGINE_ARGS, installCommand } from '../../server/services/jobRunner.mjs';
+import { installCommand } from '../../server/services/jobRunner.mjs';
 import { probeSkill } from '../../server/services/workspaceService.mjs';
 
 const realRepoRoot = path.resolve(import.meta.dirname, '../../..');
@@ -30,22 +30,13 @@ async function startTestServer(repoRoot: string) {
 
 describe('Node Workspace Bridge API (Tauri parity layer)', () => {
   let realSrv: Awaited<ReturnType<typeof startTestServer>>;
-  let tmpDir: string;
-  let tmpSrv: Awaited<ReturnType<typeof startTestServer>>;
 
   beforeAll(async () => {
     realSrv = await startTestServer(realRepoRoot);
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'toonforge-test-'));
-    await fs.mkdir(path.join(tmpDir, 'voice'), { recursive: true });
-    await fs.mkdir(path.join(tmpDir, 'src', 'videos', 'dbindex'), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, 'voice', 'dbindex_voice.wav'), 'RIFF');
-    tmpSrv = await startTestServer(tmpDir);
   });
 
   afterAll(async () => {
     realSrv.server.close();
-    tmpSrv.server.close();
-    await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
   it('GET /api/env probes video creation tools with clear roles (git, node, python, py_deps, ffmpeg, AI CLIs)', async () => {
@@ -68,49 +59,15 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(data.probes.some((p) => p.id === 'skill')).toBe(true);
   });
 
-  it('GET /api/board against real repo enriches cards with real script, voice, audio mix, QA loudness, and video paths', async () => {
-    const res = await fetch(`${realSrv.baseUrl}/api/board`);
-    expect(res.status).toBe(200);
-    const board = (await res.json()) as {
-      cards: Array<{
-        slug: string;
-        compositionId: string;
-        audioMode: string;
-        scriptFile?: string;
-        voicePath?: string;
-        mixWavFile?: string;
-        loudness?: string;
-        videoFile?: string;
-        stills?: string[];
-      }>;
-    };
-    const binary = board.cards.find((c) => c.slug === 'binary');
-    expect(binary).toBeDefined();
-    expect(binary?.compositionId).toBe('BinaryShort');
-    expect(binary?.scriptFile).toBe('SCRIPT_BINARY.md');
-    expect(binary?.voicePath).toBe('voice/binary_voice.wav');
-    expect(binary?.mixWavFile).toBe('audio/mix_binary.wav');
-    expect(binary?.videoFile).toContain('out/binary/');
-    expect(binary?.loudness).toContain('-15.1 LUFS');
-    expect(binary?.stills?.length).toBeGreaterThan(0);
-
-    const dbindex = board.cards.find((c) => c.slug === 'dbindex');
-    expect(dbindex?.compositionId).toBe('DbIndexShort');
-    const race = board.cards.find((c) => c.slug === 'racecondition');
-    expect(race?.compositionId).toBe('RaceConditionShort');
-    expect(race?.audioMode).toBe('vo_ready');
-    expect(race?.voicePath).toBe('voice/race_voice.wav');
-  });
-
-  it('rejects cross-origin simple CSRF, blocks non-media repo files, handles invalid Range/dir streams safely, and validates script writes', async () => {
-    const csrfRes = await fetch(`${realSrv.baseUrl}/api/cli/exec`, {
+  it('rejects cross-origin simple CSRF, blocks non-media repo files, handles invalid Range/dir streams safely', async () => {
+    const csrfRes = await fetch(`${realSrv.baseUrl}/api/tools/install`, {
       method: 'POST',
       headers: { Origin: 'https://evil.example', 'content-type': 'text/plain' },
       body: JSON.stringify({ command: 'echo pwned' }),
     });
     expect([403, 415]).toContain(csrfRes.status);
 
-    const plainRes = await fetch(`${realSrv.baseUrl}/api/cli/exec`, {
+    const plainRes = await fetch(`${realSrv.baseUrl}/api/tools/install`, {
       method: 'POST',
       headers: { 'content-type': 'text/plain' },
       body: JSON.stringify({ command: 'echo blocked' }),
@@ -127,55 +84,9 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
       headers: { Range: 'bytes=999999999-' },
     });
     expect(badRange.status).toBe(416);
-
-    const badPut = await fetch(`${tmpSrv.baseUrl}/api/script`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: 'dbindex' }),
-    });
-    expect(badPut.status).toBe(400);
-
-    const missingQa = await fetch(`${tmpSrv.baseUrl}/api/pipeline/run`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: 'dbindex', action: 'render' }),
-    });
-    const qaData = (await missingQa.json()) as { ok: boolean; lines: string[] };
-    expect(qaData.ok).toBe(false);
-    expect(qaData.lines.join(' ')).toContain('DbIndexShort');
   });
 
-  it('GET and PUT /api/script read and write workspace SCRIPT_*.md files safely', async () => {
-    const readRes = await fetch(`${realSrv.baseUrl}/api/script?slug=binary`);
-    expect(readRes.status).toBe(200);
-    const doc = (await readRes.json()) as { file: string; exists: boolean; content: string };
-    expect(doc.file).toBe('SCRIPT_BINARY.md');
-    expect(doc.exists).toBe(true);
-    expect(doc.content.length).toBeGreaterThan(20);
-
-    const writeRes = await fetch(`${tmpSrv.baseUrl}/api/script`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: 'dbindex', content: '# Updated DbIndex Script\nHook line!' }),
-    });
-    expect(writeRes.status).toBe(200);
-    const saved = await fs.readFile(path.join(tmpDir, 'SCRIPT_DBINDEX.md'), 'utf8');
-    expect(saved).toContain('Updated DbIndex Script');
-  });
-
-  it('POST /api/cards creates a real SCRIPT_<SLUG>.md and GET /api/media streams safe paths', async () => {
-    const createRes = await fetch(`${tmpSrv.baseUrl}/api/cards`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Cache Stampede', rigMode: 'stickman' }),
-    });
-    expect(createRes.status).toBe(200);
-    const updatedBoard = (await createRes.json()) as { cards: Array<{ slug: string; scriptFile?: string }> };
-    const created = updatedBoard.cards.find((c) => c.slug === 'cachestampede');
-    expect(created).toBeDefined();
-    const mdText = await fs.readFile(path.join(tmpDir, created!.scriptFile!), 'utf8');
-    expect(mdText).toContain('Cache Stampede');
-
+  it('GET /api/media streams safe paths', async () => {
     const imgRes = await fetch(`${realSrv.baseUrl}/api/media?path=${encodeURIComponent('src/videos/chibi/sprites/idle.png')}`);
     expect(imgRes.status).toBe(200);
     expect(imgRes.headers.get('content-type')).toContain('image/png');
@@ -198,62 +109,6 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(data.chibi.spriteFiles).toContain('idle.png');
     expect(data.chibi.faceFiles?.length).toBe(16);
     expect(data.chibi.fxFiles?.length).toBe(6);
-  });
-
-  it('GET and POST /api/board initialize and persist .toonforge/board.json', async () => {
-    const res1 = await fetch(`${tmpSrv.baseUrl}/api/board`);
-    expect(res1.status).toBe(200);
-    const board = (await res1.json()) as { autoQueue: boolean; cards: Array<{ slug: string }> };
-    expect(Array.isArray(board.cards)).toBe(true);
-    expect(board.cards.some((c) => c.slug === 'dbindex')).toBe(true);
-
-    const updated = { ...board, autoQueue: false };
-    const res2 = await fetch(`${tmpSrv.baseUrl}/api/board`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(updated),
-    });
-    expect(res2.status).toBe(200);
-
-    const savedRaw = await fs.readFile(path.join(tmpDir, '.toonforge', 'board.json'), 'utf8');
-    expect(JSON.parse(savedRaw).autoQueue).toBe(false);
-  });
-
-  const exec = (engine: string, command: string) =>
-    fetch(`${realSrv.baseUrl}/api/cli/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ engine, command }),
-    });
-
-  it('POST /api/cli/exec runs shell commands only for engine "shell"', async () => {
-    const res = await exec('shell', 'node -e "console.log(1+41)"');
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { ok: boolean; stdout: string };
-    expect(data.ok).toBe(true);
-    expect(data.stdout).toContain('42');
-  });
-
-  it('POST /api/cli/exec sends an Antigravity prompt to agy only, never to the shell', async () => {
-    const savedPath = process.env.PATH;
-    process.env.PATH = ''; // no agy on PATH, so nothing real runs
-    try {
-      const res = await exec('agy', 'node -e "console.log(1+41)"');
-      const data = (await res.json()) as { ok: boolean; stdout: string; stderr: string; engine: string };
-      expect(data.engine).toBe('agy');
-      expect(data.ok).toBe(false);
-      expect(data.stdout).not.toContain('42');
-      expect(data.stderr).toMatch(/agy/);
-    } finally {
-      process.env.PATH = savedPath;
-    }
-    expect(AI_ENGINE_ARGS.agy('hi')).toEqual({ bin: 'agy', args: ['--mode', 'accept-edits', '-p', 'hi'] });
-    expect(AI_ENGINE_ARGS.claude('hi')).toEqual({ bin: 'claude', args: ['-p', 'hi'] });
-  });
-
-  it('POST /api/cli/exec rejects an unknown engine', async () => {
-    const res = await exec('[agy]', 'echo hi');
-    expect(res.status).toBe(400);
   });
 
   it('POST /api/tools/install only runs installers from the fixed server-side list', async () => {
@@ -280,68 +135,5 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     } finally {
       await fs.rm(home, { recursive: true, force: true });
     }
-  });
-
-  it('POST /api/cards writes provided custom scriptContent into SCRIPT_<SLUG>.md', async () => {
-    const customMd = '# Locked Keyhole\nLanguage: Taglish | Rig: chibi\n\n[SFX: DOOR_LOCK_CLICK]\nHook: Locked mula loob!\n';
-    const res = await fetch(`${tmpSrv.baseUrl}/api/cards`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Locked Keyhole', rigMode: 'chibi', scriptContent: customMd }),
-    });
-    expect(res.status).toBe(200);
-    const board = (await res.json()) as { cards: Array<{ slug: string; scriptFile?: string }> };
-    const card = board.cards.find((c) => c.slug === 'lockedkeyhole');
-    expect(card).toBeDefined();
-    const written = await fs.readFile(path.join(tmpDir, card!.scriptFile!), 'utf8');
-    expect(written).toContain('Language: Taglish');
-    expect(written).toContain('[SFX: DOOR_LOCK_CLICK]');
-  });
-
-  it('POST /api/voice stores .wav/.mp3 under voice/, marks vo_ready, auto-queues when ON, and validates bad input', async () => {
-    const current = (await (await fetch(`${tmpSrv.baseUrl}/api/board`)).json()) as {
-      autoQueue: boolean;
-      cards: Array<{ slug: string }>;
-    };
-    await fetch(`${tmpSrv.baseUrl}/api/board`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...current, autoQueue: true }),
-    });
-
-    const sampleBytes = Buffer.from('RIFF0000WAVEfmt ', 'utf8').toString('base64');
-    const uploadRes = await fetch(`${tmpSrv.baseUrl}/api/voice`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        slug: 'lockedkeyhole',
-        fileName: 'elevenlabs_take1.wav',
-        base64Data: sampleBytes,
-      }),
-    });
-    expect(uploadRes.status).toBe(200);
-    const updatedBoard = (await uploadRes.json()) as {
-      cards: Array<{ slug: string; audioMode: string; lane: string; voiceFile?: string }>;
-    };
-    const updatedCard = updatedBoard.cards.find((c) => c.slug === 'lockedkeyhole');
-    expect(updatedCard?.audioMode).toBe('vo_ready');
-    expect(updatedCard?.lane).toBe('queued');
-    expect(updatedCard?.voiceFile).toBe('lockedkeyhole_voice.wav');
-    const savedVoice = await fs.readFile(path.join(tmpDir, 'voice', 'lockedkeyhole_voice.wav'));
-    expect(savedVoice.toString('utf8')).toBe('RIFF0000WAVEfmt ');
-
-    const badExtRes = await fetch(`${tmpSrv.baseUrl}/api/voice`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: 'lockedkeyhole', fileName: 'malware.exe', base64Data: sampleBytes }),
-    });
-    expect(badExtRes.status).toBe(400);
-
-    const emptyDataRes = await fetch(`${tmpSrv.baseUrl}/api/voice`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: 'lockedkeyhole', fileName: 'empty.mp3', base64Data: '' }),
-    });
-    expect(emptyDataRes.status).toBe(400);
   });
 });

@@ -3,23 +3,19 @@ import { createReadStream } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execWorkspaceCommand, installTool, runPipelineAction, runSyncRepo } from './services/jobRunner.mjs';
+import { installTool, runSyncRepo } from './services/jobRunner.mjs';
 import {
-  createCardAndScript,
   fileExists,
   getEnvStatus,
   inspectRigs,
-  loadAndEnrichBoard,
-  readCardScript,
   resolveSafeMediaPath,
-  saveBoard,
-  saveVoiceoverFile,
   ValidationError,
-  writeCardScript,
 } from './services/workspaceService.mjs';
+import { createBus } from './engine/events.mjs';
+import { createQueue } from './engine/queue.mjs';
+import { DEFAULT_LIMITS, matchEngineRoute } from './engine/routes.mjs';
 
 const MAX_JSON_BYTES = 1024 * 1024;
-const MAX_VOICE_JSON_BYTES = 16 * 1024 * 1024;
 
 const MIME_MAP = {
   '.mp4': 'video/mp4',
@@ -29,6 +25,7 @@ const MIME_MAP = {
   '.wav': 'audio/wav',
   '.mp3': 'audio/mpeg',
   '.md': 'text/markdown; charset=utf-8',
+  '.jsonl': 'text/plain; charset=utf-8',
 };
 
 function isLocalOriginAllowed(origin) {
@@ -81,8 +78,25 @@ function parseByteRange(rangeHeader, fileSize) {
   return { start, end };
 }
 
-/** Handles workspace API routes shared by Vite dev middleware and standalone Node server. */
-export async function handleApiRequest(req, res, repoRoot) {
+// One queue per repoRoot, created on first engine request. A failed start() is logged, not fatal.
+const engines = new Map();
+function getEngine(repoRoot, { agents, media } = {}) {
+  if (!engines.has(repoRoot)) {
+    const bus = createBus();
+    const queue = createQueue({ repoRoot, bus, ...(agents && { agents }), ...(media && { media }) });
+    engines.set(
+      repoRoot,
+      queue.start().catch((e) => console.error('[bridge] queue start failed:', e)).then(() => ({ queue, bus })),
+    );
+  }
+  return engines.get(repoRoot);
+}
+
+/**
+ * Handles workspace API routes shared by Vite dev middleware and standalone Node server.
+ * `deps` ({ agents, media, limits }) is for tests; production omits it.
+ */
+export async function handleApiRequest(req, res, repoRoot, deps = {}) {
   if (!isLocalHostAllowed(req.headers.host)) {
     return sendJson(res, 403, { error: 'Forbidden host' });
   }
@@ -97,33 +111,17 @@ export async function handleApiRequest(req, res, repoRoot) {
   const method = (req.method || 'GET').toUpperCase();
 
   try {
+    const engineRoute = matchEngineRoute(method, route);
+    if (engineRoute) {
+      const { queue, bus } = await getEngine(repoRoot, deps);
+      const limits = { ...DEFAULT_LIMITS, ...deps.limits };
+      return await engineRoute({ req, res, url: parsedUrl, repoRoot, queue, bus, limits, readJsonBody, sendJson });
+    }
     if (method === 'GET' && route === '/env') {
       return sendJson(res, 200, await getEnvStatus(repoRoot));
     }
     if (method === 'GET' && route === '/rigs') {
       return sendJson(res, 200, await inspectRigs(repoRoot));
-    }
-    if (method === 'GET' && route === '/board') {
-      return sendJson(res, 200, await loadAndEnrichBoard(repoRoot));
-    }
-    if (method === 'POST' && route === '/board') {
-      return sendJson(res, 200, await saveBoard(repoRoot, await readJsonBody(req)));
-    }
-    if (method === 'POST' && route === '/cards') {
-      const { title, rigMode, scriptContent } = await readJsonBody(req);
-      return sendJson(res, 200, await createCardAndScript(repoRoot, title, rigMode, scriptContent));
-    }
-    if (method === 'POST' && route === '/voice') {
-      const { slug, fileName, base64Data } = await readJsonBody(req, MAX_VOICE_JSON_BYTES);
-      return sendJson(res, 200, await saveVoiceoverFile(repoRoot, slug, fileName, base64Data));
-    }
-    if (method === 'GET' && route === '/script') {
-      const slug = parsedUrl.searchParams.get('slug') || '';
-      return sendJson(res, 200, await readCardScript(repoRoot, slug));
-    }
-    if (method === 'PUT' && route === '/script') {
-      const { slug, content } = await readJsonBody(req);
-      return sendJson(res, 200, await writeCardScript(repoRoot, slug, content));
     }
     if (method === 'GET' && route === '/media') {
       const rel = parsedUrl.searchParams.get('path') || '';
@@ -172,19 +170,10 @@ export async function handleApiRequest(req, res, repoRoot) {
     if (method === 'POST' && route === '/sync') {
       return sendJson(res, 200, await runSyncRepo(repoRoot));
     }
-    if (method === 'POST' && route === '/cli/exec') {
-      const { command, engine } = await readJsonBody(req);
-      return sendJson(res, 200, await execWorkspaceCommand(repoRoot, engine, command));
-    }
     if (method === 'POST' && route === '/tools/install') {
       const { id } = await readJsonBody(req);
       return sendJson(res, 200, await installTool(repoRoot, id));
     }
-    if (method === 'POST' && route === '/pipeline/run') {
-      const { slug, action } = await readJsonBody(req);
-      return sendJson(res, 200, await runPipelineAction(repoRoot, slug, action));
-    }
-
     return sendJson(res, 404, { error: `Unknown route ${method} ${route}` });
   } catch (err) {
     const status = err instanceof ValidationError ? err.status : 500;
