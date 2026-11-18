@@ -84,3 +84,26 @@ export interface AiProviderGuide {
   installCmd: string;
   loginCmd: string;
 }
+
+export type ScriptLanguage = 'taglish' | 'tagalog' | 'english';
+export type ContentNicheId = 'crime' | 'horror' | 'tech' | 'custom';
+export type StoryFlowStep = 'welcome' | 'topics' | 'script' | 'voiceover' | 'studio';
+
+export interface NichePreset {
+  id: ContentNicheId;
+  title: string;
+  tagline: string;
+  recommendedRig: RigMode;
+  top10Prompt: string;
+  sampleAngle: string;
+}
+
+export interface TopicIdea {
+  rank: number;
+  title: string;
+  hook: string;
+  storyBeat: string;
+  punchline: string;
+  sfxCues: string[];
+  niche: ContentNicheId;
+}

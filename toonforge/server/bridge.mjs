@@ -13,11 +13,13 @@ import {
   readCardScript,
   resolveSafeMediaPath,
   saveBoard,
+  saveVoiceoverFile,
   ValidationError,
   writeCardScript,
 } from './services/workspaceService.mjs';
 
 const MAX_JSON_BYTES = 1024 * 1024;
+const MAX_VOICE_JSON_BYTES = 16 * 1024 * 1024;
 
 const MIME_MAP = {
   '.mp4': 'video/mp4',
@@ -25,6 +27,7 @@ const MIME_MAP = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
   '.md': 'text/markdown; charset=utf-8',
 };
 
@@ -38,7 +41,7 @@ function isLocalHostAllowed(host) {
   return /^(127\.0\.0\.1|localhost)(:\d+)?$/i.test(host);
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, maxBytes = MAX_JSON_BYTES) {
   const ctype = String(req.headers['content-type'] || '').toLowerCase();
   if (!ctype.includes('application/json')) {
     throw new ValidationError('Content-Type must be application/json', 415);
@@ -47,7 +50,7 @@ async function readJsonBody(req) {
   let total = 0;
   for await (const chunk of req) {
     total += chunk.length;
-    if (total > MAX_JSON_BYTES) {
+    if (total > maxBytes) {
       throw new ValidationError('Request body too large', 413);
     }
     chunks.push(chunk);
@@ -107,8 +110,12 @@ export async function handleApiRequest(req, res, repoRoot) {
       return sendJson(res, 200, await saveBoard(repoRoot, await readJsonBody(req)));
     }
     if (method === 'POST' && route === '/cards') {
-      const { title, rigMode } = await readJsonBody(req);
-      return sendJson(res, 200, await createCardAndScript(repoRoot, title, rigMode));
+      const { title, rigMode, scriptContent } = await readJsonBody(req);
+      return sendJson(res, 200, await createCardAndScript(repoRoot, title, rigMode, scriptContent));
+    }
+    if (method === 'POST' && route === '/voice') {
+      const { slug, fileName, base64Data } = await readJsonBody(req, MAX_VOICE_JSON_BYTES);
+      return sendJson(res, 200, await saveVoiceoverFile(repoRoot, slug, fileName, base64Data));
     }
     if (method === 'GET' && route === '/script') {
       const slug = parsedUrl.searchParams.get('slug') || '';

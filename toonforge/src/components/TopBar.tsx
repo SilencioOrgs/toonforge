@@ -1,11 +1,13 @@
-import { BookOpen, GitBranch, Moon, Sun } from 'lucide-react';
+import { BookOpen, Compass, GitBranch, LayoutGrid, Moon, Sun } from 'lucide-react';
 import type { LogoConcept } from '../lib/domain';
 import { LogoSvg } from './LogoSvg';
 
 interface TopBarProps {
   theme: 'dark' | 'light';
   activeLogo: LogoConcept;
+  viewMode: 'flow' | 'workbench';
   syncLabel: string;
+  onChangeViewMode: (mode: 'flow' | 'workbench') => void;
   onSelectLogo: (logo: LogoConcept) => void;
   onOpenCompare: () => void;
   onOpenSetup: () => void;
@@ -16,7 +18,9 @@ interface TopBarProps {
 export function TopBar({
   theme,
   activeLogo,
+  viewMode,
   syncLabel,
+  onChangeViewMode,
   onSelectLogo,
   onOpenCompare,
   onOpenSetup,
@@ -62,6 +66,24 @@ export function TopBar({
       </div>
 
       <div className="tf-top-actions">
+        <div className="ql-tabs" role="group" aria-label="Workspace View">
+          <button
+            type="button"
+            onClick={() => onChangeViewMode('flow')}
+            className={`tf-tab ql-press ${viewMode === 'flow' ? 'is-active' : ''}`}
+          >
+            <Compass size={13} />
+            <span>Story Flow</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onChangeViewMode('workbench')}
+            className={`tf-tab ql-press ${viewMode === 'workbench' ? 'is-active' : ''}`}
+          >
+            <LayoutGrid size={13} />
+            <span>3D Workbench</span>
+          </button>
+        </div>
         <button type="button" onClick={onOpenSetup} className="ql-surface ql-clear ql-press tf-btn">
           <BookOpen size={14} style={{ color: 'var(--g-prio)' }} />
           <span>Setup Guide</span>

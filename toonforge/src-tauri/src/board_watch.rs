@@ -188,6 +188,7 @@ pub fn create_card(
     state: State<'_, WorkspaceState>,
     title: String,
     rig_mode: String,
+    script_content: Option<String>,
 ) -> Result<BoardState, String> {
     let clean_title = title.trim().to_string();
     if clean_title.is_empty() {
@@ -199,7 +200,10 @@ pub fn create_card(
     };
     let script_file = format!("SCRIPT_{}.md", slug.to_uppercase());
     let script_path = state.root.join(&script_file);
-    if !script_path.exists() {
+    let custom = script_content.unwrap_or_default().trim().to_string();
+    if !custom.is_empty() {
+        fs::write(&script_path, format!("{}\n", custom)).map_err(|e| e.to_string())?;
+    } else if !script_path.exists() {
         let starter = format!("# {}\n\n- **Hook (0-3s):** ...\n- **Visual Story:** ...\n- **Punchline + CTA:** Follow for more!\n", clean_title);
         fs::write(&script_path, starter).map_err(|e| e.to_string())?;
     }
@@ -276,6 +280,89 @@ pub fn write_script(
     let target = state.root.join(&file);
     fs::write(&target, &content).map_err(|e| e.to_string())?;
     Ok(ScriptDoc { slug: clean, file, content, exists: true })
+}
+
+fn decode_base64_payload(input: &str) -> Result<Vec<u8>, String> {
+    let stripped = input
+        .split_once(";base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(input)
+        .trim();
+    if stripped.is_empty() {
+        return Err("Audio payload cannot be empty".to_string());
+    }
+    let mut out = Vec::with_capacity((stripped.len() * 3) / 4);
+    let mut val: u32 = 0;
+    let mut valb: i32 = -8;
+    for byte in stripped.bytes() {
+        if byte == b'=' || byte.is_ascii_whitespace() {
+            continue;
+        }
+        let digit = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err("Invalid base64 character in audio payload".to_string()),
+        };
+        val = (val << 6) | u32::from(digit);
+        valb += 6;
+        if valb >= 0 {
+            out.push(((val >> valb) & 0xFF) as u8);
+            valb -= 8;
+        }
+    }
+    if out.is_empty() {
+        return Err("Decoded audio payload is empty".to_string());
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn upload_voiceover(
+    state: State<'_, WorkspaceState>,
+    slug: String,
+    file_name: String,
+    base64_data: String,
+) -> Result<BoardState, String> {
+    let clean = sanitize_slug(&slug);
+    if clean.is_empty() {
+        return Err("Valid card slug is required".to_string());
+    }
+    let ext = Path::new(&file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if ext != "wav" && ext != "mp3" {
+        return Err("Voiceover file must be .wav or .mp3".to_string());
+    }
+    let bytes = decode_base64_payload(&base64_data)?;
+    if bytes.len() > 12 * 1024 * 1024 {
+        return Err("Voiceover file exceeds 12MB limit".to_string());
+    }
+    let voice_file = format!("{}_voice.{}", clean, ext);
+    let voice_dir = state.root.join("voice");
+    fs::create_dir_all(&voice_dir).map_err(|e| e.to_string())?;
+    fs::write(voice_dir.join(&voice_file), bytes).map_err(|e| e.to_string())?;
+
+    let mut board = load_board(state.clone())?;
+    for card in &mut board.cards {
+        if card.slug == clean {
+            card.audio_mode = "vo_ready".to_string();
+            card.voice_file = Some(voice_file.clone());
+            card.voice_path = Some(format!("voice/{}", voice_file));
+            if board.auto_queue && card.lane == "backlog" {
+                card.lane = "queued".to_string();
+            }
+        }
+    }
+    if board.auto_queue {
+        board.active_lane = "queued".to_string();
+    }
+    board.selected_card_id = clean;
+    save_board(state, board)
 }
 
 #[cfg(test)]

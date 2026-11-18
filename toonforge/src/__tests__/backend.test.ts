@@ -227,4 +227,67 @@ describe('Node Workspace Bridge API (Tauri parity layer)', () => {
     expect(data.ok).toBe(true);
     expect(data.stdout).toContain('toonforge-ok');
   });
+
+  it('POST /api/cards writes provided custom scriptContent into SCRIPT_<SLUG>.md', async () => {
+    const customMd = '# Locked Keyhole\nLanguage: Taglish | Rig: chibi\n\n[SFX: DOOR_LOCK_CLICK]\nHook: Locked mula loob!\n';
+    const res = await fetch(`${tmpSrv.baseUrl}/api/cards`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Locked Keyhole', rigMode: 'chibi', scriptContent: customMd }),
+    });
+    expect(res.status).toBe(200);
+    const board = (await res.json()) as { cards: Array<{ slug: string; scriptFile?: string }> };
+    const card = board.cards.find((c) => c.slug === 'lockedkeyhole');
+    expect(card).toBeDefined();
+    const written = await fs.readFile(path.join(tmpDir, card!.scriptFile!), 'utf8');
+    expect(written).toContain('Language: Taglish');
+    expect(written).toContain('[SFX: DOOR_LOCK_CLICK]');
+  });
+
+  it('POST /api/voice stores .wav/.mp3 under voice/, marks vo_ready, auto-queues when ON, and validates bad input', async () => {
+    const current = (await (await fetch(`${tmpSrv.baseUrl}/api/board`)).json()) as {
+      autoQueue: boolean;
+      cards: Array<{ slug: string }>;
+    };
+    await fetch(`${tmpSrv.baseUrl}/api/board`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...current, autoQueue: true }),
+    });
+
+    const sampleBytes = Buffer.from('RIFF0000WAVEfmt ', 'utf8').toString('base64');
+    const uploadRes = await fetch(`${tmpSrv.baseUrl}/api/voice`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slug: 'lockedkeyhole',
+        fileName: 'elevenlabs_take1.wav',
+        base64Data: sampleBytes,
+      }),
+    });
+    expect(uploadRes.status).toBe(200);
+    const updatedBoard = (await uploadRes.json()) as {
+      cards: Array<{ slug: string; audioMode: string; lane: string; voiceFile?: string }>;
+    };
+    const updatedCard = updatedBoard.cards.find((c) => c.slug === 'lockedkeyhole');
+    expect(updatedCard?.audioMode).toBe('vo_ready');
+    expect(updatedCard?.lane).toBe('queued');
+    expect(updatedCard?.voiceFile).toBe('lockedkeyhole_voice.wav');
+    const savedVoice = await fs.readFile(path.join(tmpDir, 'voice', 'lockedkeyhole_voice.wav'));
+    expect(savedVoice.toString('utf8')).toBe('RIFF0000WAVEfmt ');
+
+    const badExtRes = await fetch(`${tmpSrv.baseUrl}/api/voice`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'lockedkeyhole', fileName: 'malware.exe', base64Data: sampleBytes }),
+    });
+    expect(badExtRes.status).toBe(400);
+
+    const emptyDataRes = await fetch(`${tmpSrv.baseUrl}/api/voice`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'lockedkeyhole', fileName: 'empty.mp3', base64Data: '' }),
+    });
+    expect(emptyDataRes.status).toBe(400);
+  });
 });

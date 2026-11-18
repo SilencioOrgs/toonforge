@@ -4,6 +4,7 @@ import { IconPickerDialog } from './components/IconPickerDialog';
 import { PipelineAndCliPane } from './components/PipelineAndCliPane';
 import { SetupWizardDialog } from './components/SetupWizardDialog';
 import { StageInspectorPane, type StageTab } from './components/StageInspectorPane';
+import { StoryFlowWizard } from './components/StoryFlowWizard';
 import { TopBar } from './components/TopBar';
 import * as backend from './lib/backend';
 import {
@@ -12,16 +13,41 @@ import {
   buildManualSetupCommands,
   buildVideoStepPrompt,
   errorMessage,
+  generateScriptFromTopic,
+  getTop10TopicsForNiche,
+  NICHE_PRESETS,
+  SCRIPT_LANGUAGE_LABELS,
   setCardRig,
   toggleCardAudioMode,
   type BoardState,
   type CliEngine,
+  type ContentNicheId,
   type EnvStatus,
   type LogoConcept,
   type RigMode,
   type RigSummary,
+  type ScriptLanguage,
+  type StoryFlowStep,
+  type TopicIdea,
   type VideoStep,
 } from './lib/domain';
+
+async function fileToBase64(file: File): Promise<string> {
+  if (typeof file.arrayBuffer === 'function') {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < buf.length; i += 0x8000) {
+      bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    }
+    return btoa(bin);
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').replace(/^data:[^;]+;base64,/i, ''));
+    reader.onerror = () => reject(reader.error || new Error('Failed reading voiceover file'));
+    reader.readAsDataURL(file);
+  });
+}
 
 const INITIAL_EMPTY_BOARD: BoardState = {
   version: 1,
@@ -52,6 +78,18 @@ export function App() {
   const [qaOverride, setQaOverride] = useState<'QA Next' | 'QA Pass' | null>(null);
   const [setupTab, setSetupTab] = useState<'ai' | 'manual' | 'walk'>('ai');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const [viewMode, setViewMode] = useState<'flow' | 'workbench'>('flow');
+  const [storyStep, setStoryStep] = useState<StoryFlowStep>('welcome');
+  const [scriptLang, setScriptLang] = useState<ScriptLanguage>('taglish');
+  const [niche, setNiche] = useState<ContentNicheId>('crime');
+  const [customNiche, setCustomNiche] = useState('');
+  const [selectedTopic, setSelectedTopic] = useState<TopicIdea | null>(null);
+  const [scriptDraft, setScriptDraft] = useState('');
+  const [flowRigMode, setFlowRigMode] = useState<RigMode>('chibi');
+  const [flowCardSlug, setFlowCardSlug] = useState<string | null>(null);
+  const [voUploadStatus, setVoUploadStatus] = useState('');
+  const [cliStatusText, setCliStatusText] = useState('');
 
   const logoDialogRef = useRef<HTMLDialogElement>(null);
   const setupDialogRef = useRef<HTMLDialogElement>(null);
@@ -189,12 +227,129 @@ export function App() {
     setCopiedKey(key);
   };
 
+  const flowTopics = useMemo(
+    () => getTop10TopicsForNiche(niche, customNiche, scriptLang),
+    [niche, customNiche, scriptLang],
+  );
+
+  const flowCreatedCard = useMemo(
+    () => (flowCardSlug ? board.cards.find((c) => c.slug === flowCardSlug) ?? null : null),
+    [board.cards, flowCardSlug],
+  );
+
+  const handleFlowLanguageChange = (nextLang: ScriptLanguage) => {
+    setScriptLang(nextLang);
+    if (selectedTopic) {
+      const updatedTopics = getTop10TopicsForNiche(niche, customNiche, nextLang);
+      const matchingTopic = updatedTopics.find((t) => t.rank === selectedTopic.rank) ?? updatedTopics[0];
+      setSelectedTopic(matchingTopic);
+      setScriptDraft(generateScriptFromTopic(matchingTopic, nextLang, flowRigMode));
+    }
+  };
+
+  const handleFlowSelectNiche = (chosenNiche: ContentNicheId) => {
+    setNiche(chosenNiche);
+    const preset = NICHE_PRESETS.find((p) => p.id === chosenNiche);
+    if (preset) setFlowRigMode(preset.recommendedRig);
+    setCliStatusText('');
+    setStoryStep('topics');
+  };
+
+  const handleFlowSelectTopic = (topic: TopicIdea) => {
+    setSelectedTopic(topic);
+    setScriptDraft(generateScriptFromTopic(topic, scriptLang, flowRigMode));
+    setVoUploadStatus('');
+    setStoryStep('script');
+  };
+
+  const handleFlowRigChange = (rig: RigMode) => {
+    setFlowRigMode(rig);
+    if (selectedTopic) {
+      setScriptDraft(generateScriptFromTopic(selectedTopic, scriptLang, rig));
+    }
+  };
+
+  const handleAskAiTop10 = async (prompt: string) => {
+    setCliStatusText(`Running ${activeCli} for fresh ${SCRIPT_LANGUAGE_LABELS[scriptLang]} Top 10 ideas...`);
+    setCliInput(prompt);
+    appendLog(`${activeCli} $ ${prompt}`);
+    try {
+      const res = await backend.execCliCommand(activeCli, prompt);
+      const line = (res.stdout || res.stderr || 'Prompt queued for AI CLI').trim().split(/\r?\n/)[0];
+      setCliStatusText(line);
+      if (line) appendLog(line);
+    } catch (err: unknown) {
+      const msg = errorMessage(err);
+      setCliStatusText(`Ready in CLI panel: ${msg}`);
+      appendLog(`cli > ${msg}`);
+    }
+  };
+
+  const handleSaveScriptAndContinue = async () => {
+    const title = selectedTopic?.title || customNiche.trim() || `Short ${board.cards.length + 1}`;
+    try {
+      const next = await backend.createCard(title, flowRigMode, scriptDraft);
+      setBoard(next);
+      const created = next.cards[0];
+      if (created) {
+        setFlowCardSlug(created.slug);
+        appendLog(`flow > saved ${created.scriptFile || 'SCRIPT.md'} (${SCRIPT_LANGUAGE_LABELS[scriptLang]})`);
+      }
+      setStoryStep('voiceover');
+    } catch (err: unknown) {
+      appendLog(`flow save error > ${errorMessage(err)}`);
+    }
+  };
+
+  const handleUploadVoiceFile = async (file: File) => {
+    const targetSlug = flowCardSlug || selectedCard?.slug;
+    if (!targetSlug) {
+      setVoUploadStatus('Save a script card first before attaching voiceover.');
+      return;
+    }
+    try {
+      const base64Data = await fileToBase64(file);
+      const next = await backend.uploadVoiceover(targetSlug, file.name, base64Data);
+      setBoard(next);
+      setVoUploadStatus(`VO Attached: ${file.name} -> voice/${targetSlug}_voice${file.name.toLowerCase().endsWith('.mp3') ? '.mp3' : '.wav'}`);
+      appendLog(`vo > uploaded ${file.name} for ${targetSlug} (autoQueue=${String(next.autoQueue)})`);
+    } catch (err: unknown) {
+      const msg = errorMessage(err);
+      setVoUploadStatus(`Upload error: ${msg}`);
+      appendLog(`vo error > ${msg}`);
+    }
+  };
+
+  const handleSkipToNoVo = async () => {
+    const targetCard = flowCreatedCard || selectedCard;
+    if (targetCard) {
+      const updated = {
+        ...board,
+        selectedCardId: targetCard.id,
+        cards: board.cards.map((c) => {
+          if (c.id !== targetCard.id) return c;
+          const lane = board.autoQueue && c.lane === 'backlog' ? 'queued' : c.lane;
+          return { ...c, audioMode: 'no_vo' as const, lane };
+        }),
+      };
+      persistBoard(updated);
+      setVoUploadStatus('No-VO Visual Mode active (Suno BGM / SFX timing).');
+    }
+  };
+
   return (
     <div id="studio-frame" data-mode={theme}>
       <TopBar
         theme={theme}
         activeLogo={activeLogo}
+        viewMode={viewMode}
         syncLabel={syncLabel}
+        onChangeViewMode={(mode) => {
+          setViewMode(mode);
+          if (mode === 'workbench' && flowCreatedCard) {
+            setStageView('script');
+          }
+        }}
         onSelectLogo={setActiveLogo}
         onOpenCompare={() => logoDialogRef.current?.showModal()}
         onOpenSetup={() => setupDialogRef.current?.showModal()}
@@ -202,7 +357,55 @@ export function App() {
         onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
       />
 
-      <div className="tf-grid">
+      {viewMode === 'flow' ? (
+        <StoryFlowWizard
+          step={storyStep}
+          language={scriptLang}
+          niche={niche}
+          customNiche={customNiche}
+          topics={flowTopics}
+          selectedTopic={selectedTopic}
+          scriptDraft={scriptDraft}
+          rigMode={flowRigMode}
+          rigs={rigs}
+          activeCli={activeCli}
+          autoQueue={board.autoQueue}
+          createdCard={flowCreatedCard}
+          voUploadStatus={voUploadStatus}
+          cliStatusText={cliStatusText}
+          copiedKey={copiedKey}
+          getMediaUrl={backend.mediaUrl}
+          onStepChange={(nextStep) => {
+            if (nextStep === 'studio') {
+              setViewMode('workbench');
+            } else {
+              setStoryStep(nextStep);
+            }
+          }}
+          onLanguageChange={handleFlowLanguageChange}
+          onSelectNiche={handleFlowSelectNiche}
+          onCustomNicheChange={setCustomNiche}
+          onSelectTopic={handleFlowSelectTopic}
+          onScriptChange={setScriptDraft}
+          onRigModeChange={handleFlowRigChange}
+          onAskAiTop10={handleAskAiTop10}
+          onSaveScriptAndContinue={handleSaveScriptAndContinue}
+          onUploadVoiceFile={handleUploadVoiceFile}
+          onSkipToNoVo={handleSkipToNoVo}
+          onEnterWorkbench={() => {
+            if (flowCreatedCard) {
+              persistBoard({
+                ...board,
+                activeLane: flowCreatedCard.lane,
+                selectedCardId: flowCreatedCard.id,
+              });
+            }
+            setViewMode('workbench');
+          }}
+          onCopy={handleCopy}
+        />
+      ) : (
+        <div className="tf-grid">
         <ContentBankPane
           board={board}
           loading={loadingBoard}
@@ -256,7 +459,8 @@ export function App() {
           onGuidedStep={handleGuidedStep}
           onVerifyTypecheck={handleVerifyTypecheck}
         />
-      </div>
+        </div>
+      )}
 
       <IconPickerDialog dialogRef={logoDialogRef} activeLogo={activeLogo} onSelectLogo={setActiveLogo} />
 

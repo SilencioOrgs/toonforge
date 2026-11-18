@@ -440,7 +440,7 @@ export async function saveBoard(repoRoot, board) {
   return board;
 }
 
-export async function createCardAndScript(repoRoot, title, rigMode) {
+export async function createCardAndScript(repoRoot, title, rigMode, scriptContent = '') {
   const cleanTitle = String(title || '').trim();
   if (!cleanTitle) {
     throw new ValidationError('Card title is required', 400);
@@ -448,7 +448,10 @@ export async function createCardAndScript(repoRoot, title, rigMode) {
   const slug = sanitizeSlug(cleanTitle).slice(0, 18) || `short${Date.now()}`;
   const scriptFile = `SCRIPT_${slug.toUpperCase()}.md`;
   const scriptPath = path.join(repoRoot, scriptFile);
-  if (!(await fileExists(scriptPath))) {
+  const customScript = typeof scriptContent === 'string' ? scriptContent.trim() : '';
+  if (customScript) {
+    await fs.writeFile(scriptPath, `${customScript}\n`, 'utf8');
+  } else if (!(await fileExists(scriptPath))) {
     const starter = `# ${cleanTitle}\n\n- **Hook (0-3s):** ...\n- **Visual Story:** ...\n- **Punchline + CTA:** Follow for more!\n`;
     await fs.writeFile(scriptPath, starter, 'utf8');
   }
@@ -478,6 +481,61 @@ export async function createCardAndScript(repoRoot, title, rigMode) {
   };
   await saveBoard(repoRoot, updated);
   return enrichBoardWithWorkspace(updated, repoRoot);
+}
+
+const MAX_VOICE_BYTES = 12 * 1024 * 1024;
+const ALLOWED_VOICE_EXTS = new Set(['.wav', '.mp3']);
+
+/** Saves an uploaded ElevenLabs / creator voiceover file into voice/<slug>_voice.<ext> and auto-queues if enabled. */
+export async function saveVoiceoverFile(repoRoot, rawSlug, fileName, base64Data) {
+  const slug = sanitizeSlug(rawSlug);
+  if (!slug) {
+    throw new ValidationError('Valid card slug is required', 400);
+  }
+  const ext = path.extname(String(fileName || '')).toLowerCase();
+  if (!ALLOWED_VOICE_EXTS.has(ext)) {
+    throw new ValidationError('Voiceover file must be .wav or .mp3', 400);
+  }
+  const cleanB64 = String(base64Data || '')
+    .replace(/^data:[^;]+;base64,/i, '')
+    .trim();
+  if (!cleanB64) {
+    throw new ValidationError('Audio payload cannot be empty', 400);
+  }
+  const buffer = Buffer.from(cleanB64, 'base64');
+  if (buffer.length === 0) {
+    throw new ValidationError('Decoded audio payload is empty', 400);
+  }
+  if (buffer.length > MAX_VOICE_BYTES) {
+    throw new ValidationError('Voiceover file exceeds 12MB limit', 413);
+  }
+
+  const voiceFileName = `${slug}_voice${ext}`;
+  const voiceDir = path.join(repoRoot, 'voice');
+  await fs.mkdir(voiceDir, { recursive: true });
+  await fs.writeFile(path.join(voiceDir, voiceFileName), buffer);
+
+  const board = await loadAndEnrichBoard(repoRoot);
+  const cards = board.cards.map((card) => {
+    if (card.slug !== slug) return card;
+    const lane = board.autoQueue && card.lane === 'backlog' ? 'queued' : card.lane;
+    return {
+      ...card,
+      audioMode: 'vo_ready',
+      voiceFile: voiceFileName,
+      voicePath: `voice/${voiceFileName}`,
+      durationLabel: card.lane === 'done' ? card.durationLabel : 'VO Ready',
+      lane,
+    };
+  });
+  const nextBoard = {
+    ...board,
+    activeLane: board.autoQueue ? 'queued' : board.activeLane,
+    selectedCardId: slug,
+    cards,
+  };
+  await saveBoard(repoRoot, nextBoard);
+  return enrichBoardWithWorkspace(nextBoard, repoRoot);
 }
 
 export async function readCardScript(repoRoot, rawSlug) {

@@ -108,6 +108,27 @@ vi.mock('../lib/backend', () => ({
     exists: true,
     content,
   })),
+  uploadVoiceover: vi.fn(async (slug: string, fileName: string) => ({
+    ...initialBoard,
+    activeLane: 'queued' as const,
+    selectedCardId: slug,
+    cards: [
+      {
+        id: slug,
+        slug,
+        title: 'The Locked Apartment Keyhole Mystery',
+        lane: 'queued' as const,
+        audioMode: 'vo_ready' as const,
+        rigMode: 'chibi' as const,
+        durationLabel: 'VO Ready',
+        compositionId: 'LockedShort',
+        scriptFile: `SCRIPT_${slug.toUpperCase()}.md`,
+        voiceFile: `${slug}_voice.wav`,
+        voicePath: `voice/${slug}_voice.wav`,
+      },
+      ...initialBoard.cards,
+    ],
+  })),
   syncRepo: vi.fn(async () => ({ ok: true, lines: ['working tree clean · main'] })),
   runPipeline: vi.fn(async () => ({ ok: true, step: 'qa', completionPct: 100, lines: ['SPECS 1440x2560 OK', 'QA Pass'] })),
   execCliCommand: vi.fn(async (_engine: string, cmd: string) => ({
@@ -119,8 +140,59 @@ vi.mock('../lib/backend', () => ({
 }));
 
 describe('ToonForge Full-Stack Modular Studio UI', () => {
+  it('guides new users through animated 5-Step Story Flow: Intro + Language -> Crime Top 10 -> Script -> ElevenLabs VO -> Workbench', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/What is ToonForge\?/i)).toBeInTheDocument());
+
+    // First-place required language picker (Taglish / Pure Tagalog / English) + Niche Cards
+    expect(screen.getByRole('button', { name: /^Taglish$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Pure Tagalog$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^English$/i })).toBeInTheDocument();
+    expect(screen.getByText('Crime Scene & Mystery')).toBeInTheDocument();
+    expect(screen.getByText('Night Shift & Horror')).toBeInTheDocument();
+    expect(screen.getByText('Tech & System Design')).toBeInTheDocument();
+    expect(screen.getByText('Custom Niche')).toBeInTheDocument();
+
+    // Select Pure Tagalog first, then choose Crime Scene & Mystery niche card
+    fireEvent.click(screen.getByRole('button', { name: /^Pure Tagalog$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Crime Scene & Mystery/i }));
+
+    // Step 2: Software Topic Bank (Top 10 GUI + ready AI prompt)
+    await waitFor(() => expect(screen.getByText(/Software Topic Bank/i)).toBeInTheDocument());
+    expect(screen.getByText('#01')).toBeInTheDocument();
+    expect(screen.getByText('#10')).toBeInTheDocument();
+    expect(screen.getByText(/The Locked Apartment Keyhole Mystery/i)).toBeInTheDocument();
+
+    // Pick Topic #1 -> transitions to Script Studio with Pure Tagalog + [SFX] cues
+    fireEvent.click(screen.getByRole('button', { name: /The Locked Apartment Keyhole Mystery/i }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Script Studio/i })).toBeInTheDocument());
+    const scriptArea = document.querySelector('textarea') as HTMLTextAreaElement | null;
+    expect(scriptArea?.value).toContain('Language: Pure Tagalog');
+    expect(scriptArea?.value).toContain('[SFX:');
+
+    // Save Script & continue to ElevenLabs / Voiceover GUI
+    fireEvent.click(screen.getByRole('button', { name: /Save Script & Go to VO/i }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /ElevenLabs \/ Voiceover Studio/i })).toBeInTheDocument());
+
+    // Clean narration strips [SFX:] tags for ElevenLabs paste
+    const cleanBox = document.querySelector('[data-testid="clean-vo-text"]') as HTMLElement | null;
+    expect(cleanBox?.textContent).not.toContain('[SFX:');
+    expect(cleanBox?.textContent).toContain('Nakakandado mula sa loob');
+
+    // Upload WAV audio or proceed to Workbench
+    const fileInput = document.querySelector('input[type="file"][accept=".wav,.mp3"]') as HTMLInputElement;
+    const mockFile = new File(['RIFF0000WAVE'], 'crime_vo.wav', { type: 'audio/wav' });
+    fireEvent.change(fileInput, { target: { files: [mockFile] } });
+
+    await waitFor(() => expect(screen.getByText(/VO Attached/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Open 3D Workbench/i }));
+    await waitFor(() => expect(screen.getByText('Content Bank')).toBeInTheDocument());
+  });
+
   it('toggles Light/Dark monochrome themes and renders real workspace card telemetry', async () => {
     render(<App />);
+    await screen.findByText(/What is ToonForge\?/i);
+    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
     expect(screen.getAllByText(/-15\.1 LUFS/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/100%/)).toBeInTheDocument();
@@ -133,6 +205,8 @@ describe('ToonForge Full-Stack Modular Studio UI', () => {
 
   it('shows live icon samples inside Choose Icon dialog and video-creation dependencies inside Setup Guide', async () => {
     render(<App />);
+    await screen.findByText(/What is ToonForge\?/i);
+    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Compare/i }));
@@ -151,6 +225,8 @@ describe('ToonForge Full-Stack Modular Studio UI', () => {
 
   it('switches Center Stage across Real Chibi PNG Sprite Compositor, Video player, Stills strip, and live Script/Audio editor', async () => {
     render(<App />);
+    await screen.findByText(/What is ToonForge\?/i);
+    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
 
     expect(document.querySelector('img[src*="sprites%2Fidle.png"]')).toBeInTheDocument();
@@ -171,6 +247,8 @@ describe('ToonForge Full-Stack Modular Studio UI', () => {
 
   it('explains AI CLI account requirements clearly and builds per-card guided prompts', async () => {
     render(<App />);
+    await screen.findByText(/What is ToonForge\?/i);
+    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
 
     expect(document.querySelector('.ai-guide-bar')?.textContent).toMatch(/Built-in with Antigravity IDE/i);
@@ -186,6 +264,8 @@ describe('ToonForge Full-Stack Modular Studio UI', () => {
 
   it('auto-queues Backlog cards when toggled to VO Ready while Auto-Q is ON', async () => {
     render(<App />);
+    await screen.findByText(/What is ToonForge\?/i);
+    fireEvent.click(screen.getByRole('button', { name: /^3D Workbench$/i }));
     await waitFor(() => expect(screen.getByText('DbIndex (B-Tree)')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Backlog/i }));

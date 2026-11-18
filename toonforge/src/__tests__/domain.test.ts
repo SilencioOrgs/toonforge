@@ -7,8 +7,12 @@ import {
   buildManualSetupCommands,
   buildVideoStepPrompt,
   computeCardCompletionPct,
+  generateScriptFromTopic,
+  getTop10TopicsForNiche,
   moveCardToLane,
+  NICHE_PRESETS,
   setCardRig,
+  stripSfxTagsForVoiceover,
   toggleCardAudioMode,
   type BoardState,
   type EnvProbe,
@@ -166,5 +170,46 @@ describe('ToonForge domain Kanban & Auto-Queue state machine', () => {
     const moved = moveCardToLane(sampleBoard(), 'async-queues', 'done');
     expect(moved.cards.find((c) => c.id === 'async-queues')?.lane).toBe('done');
     expect(moved.activeLane).toBe('done');
+  });
+});
+
+describe('story flow domain helpers (niches, top-10 topics, localized script & VO clean text)', () => {
+  it('exposes the 4 starter niche presets (crime, horror, tech, custom)', () => {
+    expect(NICHE_PRESETS.map((n) => n.id)).toEqual(['crime', 'horror', 'tech', 'custom']);
+    const crime = NICHE_PRESETS.find((n) => n.id === 'crime');
+    expect(crime?.top10Prompt).toContain('Top 10');
+  });
+
+  it('returns 10 localized topics for crime, horror, tech, and parameterized custom niche', () => {
+    const crimeTaglish = getTop10TopicsForNiche('crime', '', 'taglish');
+    const crimeTagalog = getTop10TopicsForNiche('crime', '', 'tagalog');
+    const crimeEnglish = getTop10TopicsForNiche('crime', '', 'english');
+
+    expect(crimeTaglish).toHaveLength(10);
+    expect(crimeTagalog).toHaveLength(10);
+    expect(crimeEnglish).toHaveLength(10);
+    expect(crimeTaglish[0].rank).toBe(1);
+    expect(crimeTaglish[0].sfxCues.length).toBeGreaterThan(0);
+    expect(crimeTaglish[0].hook).not.toBe(crimeEnglish[0].hook);
+    expect(crimeTagalog[0].hook).not.toBe(crimeEnglish[0].hook);
+
+    const customTopics = getTop10TopicsForNiche('custom', 'Philippine Urban Legends', 'taglish');
+    expect(customTopics).toHaveLength(10);
+    expect(customTopics[0].title).toContain('Philippine Urban Legends');
+    expect(customTopics[0].niche).toBe('custom');
+  });
+
+  it('generates localized script markdown with [SFX] cues and strips tags cleanly for ElevenLabs VO', () => {
+    const topic = getTop10TopicsForNiche('crime', '', 'tagalog')[0];
+    const md = generateScriptFromTopic(topic, 'tagalog', 'chibi');
+
+    expect(md).toContain('Pure Tagalog');
+    expect(md).toContain('[SFX:');
+    expect(md).toContain('Chibi');
+
+    const cleanVo = stripSfxTagsForVoiceover(md);
+    expect(cleanVo).not.toContain('[SFX:');
+    expect(cleanVo).not.toContain('#');
+    expect(cleanVo.length).toBeGreaterThan(40);
   });
 });

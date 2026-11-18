@@ -45,6 +45,7 @@ pub fn run() {
             board_watch::create_card,
             board_watch::read_script,
             board_watch::write_script,
+            board_watch::upload_voiceover,
             rig_manager::inspect_rigs,
             pipeline_job::run_pipeline,
             pty_host::exec_cli_command,

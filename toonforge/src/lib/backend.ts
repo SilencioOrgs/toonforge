@@ -66,11 +66,31 @@ export async function saveBoard(board: BoardState): Promise<BoardState> {
   });
 }
 
-export async function createCard(title: string, rigMode: RigMode): Promise<BoardState> {
-  if (isTauriRuntime()) return tauriInvoke<BoardState>('create_card', { title, rigMode });
+export async function createCard(
+  title: string,
+  rigMode: RigMode,
+  scriptContent?: string,
+): Promise<BoardState> {
+  if (isTauriRuntime()) {
+    return tauriInvoke<BoardState>('create_card', { title, rigMode, scriptContent });
+  }
   return httpJson<BoardState>('/api/cards', {
     method: 'POST',
-    body: JSON.stringify({ title, rigMode }),
+    body: JSON.stringify({ title, rigMode, scriptContent }),
+  });
+}
+
+export async function uploadVoiceover(
+  slug: string,
+  fileName: string,
+  base64Data: string,
+): Promise<BoardState> {
+  if (isTauriRuntime()) {
+    return tauriInvoke<BoardState>('upload_voiceover', { slug, fileName, base64Data });
+  }
+  return httpJson<BoardState>('/api/voice', {
+    method: 'POST',
+    body: JSON.stringify({ slug, fileName, base64Data }),
   });
 }
 
