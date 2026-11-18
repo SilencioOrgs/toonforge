@@ -32,6 +32,12 @@ describe('prompts', () => {
     expect(p.scriptPrompt(card, folder)).toContain('shorts/history/Batch 1/bridge/SCRIPT.md');
   });
 
+  it('scenePrompt names the word timings path', () => {
+    const words = 'shorts/history/Batch 1/bridge/words.json';
+    expect(p.scenePrompt({ ...card, files: { words } })).toContain(`timed to ${words}`);
+    expect(p.scenePrompt(card)).not.toContain('words.json');
+  });
+
   it('fixPrompt keeps last 4000 chars', () => {
     const s = p.fixPrompt(card, 'scene', 'Q'.repeat(6000) + 'Z'.repeat(4000));
     expect(s).toContain('Z'.repeat(4000));

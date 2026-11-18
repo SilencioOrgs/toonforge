@@ -32,7 +32,7 @@ Put each [SFX: ...] cue on its own line.${vo ? '\nEnd with a "## Narration" sect
 export function scenePrompt(card) {
   return `${SKILL}
 Steps 4-7 (shot plan, world, characters, post) for "${card.title}" (${card.slug}).
-Copy templates/bridge/ to src/videos/${card.slug}/, write the shot plan in story.ts${card.files?.words ? ' timed to words.json' : ''}, use the ${card.rig} rig for characters, and register composition ${card.compId} in src/Root.tsx.
+Copy templates/bridge/ to src/videos/${card.slug}/, write the shot plan in story.ts${card.files?.words ? ` timed to ${card.files.words}` : ''}, use the ${card.rig} rig for characters, and register composition ${card.compId} in src/Root.tsx.
 Do not render.`;
 }
 
