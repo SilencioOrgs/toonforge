@@ -30,6 +30,7 @@ const INSTALLERS = {
   python: { win32: WINGET('Python.Python.3.12') },
   ffmpeg: { win32: WINGET('Gyan.FFmpeg') },
   py_deps: { any: 'python -m pip install numpy pillow' },
+  whisper: { any: 'python -m pip install faster-whisper' },
   chromium: { any: 'npx remotion browser ensure' },
   claude: { any: 'npm install -g @anthropic-ai/claude-code' },
   codex: { any: 'npm install -g @openai/codex' },

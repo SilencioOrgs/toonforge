@@ -49,6 +49,14 @@ export const TOOL_SPECS = [
     installCmd: 'python -m pip install numpy pillow',
   },
   {
+    id: 'whisper',
+    name: 'faster-whisper',
+    bin: 'python',
+    args: ['-c', 'import faster_whisper; print("faster-whisper OK")'],
+    role: 'Makes word timings (words.json) from your voice file',
+    installCmd: 'python -m pip install faster-whisper',
+  },
+  {
     id: 'ffmpeg',
     name: 'FFmpeg + FFprobe',
     bin: 'ffmpeg',
