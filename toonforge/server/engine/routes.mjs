@@ -118,8 +118,8 @@ const ROUTES = {
 
   async 'POST /topics'(c) {
     const p = folderPath(c.url);
-    const { count, source } = await c.readJsonBody(c.req);
-    if (!Number.isInteger(count) || count < 1 || count > 50) throw bad('count must be a whole number from 1 to 50');
+    const { count = 10, source } = await c.readJsonBody(c.req);
+    if (!Number.isInteger(count) || count < 1 || count > 20) throw bad('count must be a whole number from 1 to 20');
     oneOf(source, ['real', 'made_up'], 'source');
     c.sendJson(c.res, 200, await c.queue.enqueueTopics(p, { count, source }));
   },
@@ -172,8 +172,10 @@ const ROUTES = {
       folder.cards = [...folder.cards, ...created];
       folder.topicRun = null;
     });
-    const lines = items.map((it) => `- ${it.title.trim()}: ${String(it.hook ?? '').trim()}\n`).join('');
-    await fs.appendFile(path.join(c.repoRoot, p, 'topics.md'), lines);
+    const one = (s) => String(s ?? '').replace(/[\r\n]+/g, ' ').trim();
+    const lines = items.map((it) => `- ${one(it.title)}: ${one(it.hook)}\n`).join('');
+    // The cards are already saved; a failed note must not strand them without script jobs.
+    await fs.appendFile(path.join(c.repoRoot, p, 'topics.md'), lines).catch((e) => console.error('[routes] topics.md append failed:', e));
     c.bus.emit('folder.changed', { path: p });
     for (const card of created) await c.queue.enqueueCard(p, card.id);
     c.sendJson(c.res, 200, withPath(f, p));
@@ -239,6 +241,7 @@ const ROUTES = {
     const dest = path.join(c.repoRoot, card.files.script ?? `${p}/${card.slug}/SCRIPT.md`);
     await fs.mkdir(path.dirname(dest), { recursive: true });
     await fs.writeFile(dest, content);
+    c.bus.emit('folder.changed', { path: p });
     c.sendJson(c.res, 200, { ok: true });
   },
 

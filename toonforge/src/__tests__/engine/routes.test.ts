@@ -191,4 +191,47 @@ describe('engine routes', () => {
     expect(put.body).toEqual({ ok: true });
     expect(await fs.readFile(path.join(tmp, p, card.slug!, 'SCRIPT.md'), 'utf8')).toBe('# hi');
   });
+
+  it('caps topic count at 20 and defaults to 10', async () => {
+    const p = await makeFolder();
+    expect((await call('POST', '/api/topics' + q(p), { count: 21, source: 'real' })).status).toBe(400);
+    const r = await call('POST', '/api/topics' + q(p), { source: 'made_up' });
+    expect(r.status).toBe(200);
+    expect(r.body.payload.count).toBe(10);
+  });
+
+  it('approve writes one topics.md line per topic even when title has a newline, and still queues if the append fails', async () => {
+    const p = await makeFolder();
+    const r = await call('POST', '/api/topics/approve' + q(p), { items: [{ title: 'Two\r\nLines', hook: 'a\nb', audio: 'vo', rig: 'chibi' }] });
+    expect(r.status).toBe(200);
+    expect(await fs.readFile(path.join(tmp, p, 'topics.md'), 'utf8')).toBe('- Two Lines: a b\n');
+    // a directory squatting on topics.md makes the append fail
+    const p2 = (await call('POST', '/api/folders', { category: 'horror', name: 'Other', agent: 'codex' })).body.path;
+    await fs.mkdir(path.join(tmp, p2, 'topics.md'));
+    const r2 = await call('POST', '/api/topics/approve' + q(p2), { items: [{ title: 'Solo', hook: 'h', audio: 'vo', rig: 'chibi' }] });
+    expect(r2.status).toBe(200);
+    const snap = (await call('GET', '/api/queue')).body;
+    expect([snap.running, ...snap.queued].some((j: any) => j?.folderPath === p2)).toBe(true);
+  });
+
+  it('PUT /card/script emits folder.changed', async () => {
+    const p = await makeFolder();
+    await approve(p, 1);
+    const card = (await readFolder(tmp, p)).cards[0];
+    const ac = new AbortController();
+    const res = await fetch(base + '/api/events', { signal: ac.signal });
+    const reader = res.body!.getReader();
+    const wait = (async () => {
+      let buf = '';
+      for (;;) {
+        const { value } = await reader.read();
+        buf += new TextDecoder().decode(value);
+        for (const m of buf.matchAll(/data: (.*)\n\n/g)) if (JSON.parse(m[1]).type === 'folder.changed') return JSON.parse(m[1]);
+      }
+    })();
+    await call('PUT', '/api/card/script' + q(p, `&card=${card.id}`), { content: '# x' });
+    const ev: any = await Promise.race([wait, new Promise((_, rej) => setTimeout(() => rej(new Error('no event in 2s')), 2000))]);
+    ac.abort();
+    expect(ev).toMatchObject({ type: 'folder.changed', path: p });
+  });
 });
