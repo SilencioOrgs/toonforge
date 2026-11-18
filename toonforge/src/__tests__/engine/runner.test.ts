@@ -54,6 +54,15 @@ describe('shimTarget', () => {
       '"%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n');
     expect(shimTarget(shim)).toBe(path.join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'));
   });
+  const fixture = (n: string) => path.resolve(__dirname, '../fixtures/shims', n);
+  it('picks npx-cli.js, not npm-prefix.js, from the real npx shim', () => {
+    const t = shimTarget(fixture('npx.cmd'));
+    expect(t).toBe(path.join(path.dirname(fixture('npx.cmd')), 'node_modules', 'npm', 'bin', 'npx-cli.js'));
+  });
+  it('picks codex.js from the real codex shim', () => {
+    const t = shimTarget(fixture('codex.cmd'));
+    expect(t).toBe(path.join(path.dirname(fixture('codex.cmd')), 'node_modules', '@openai', 'codex', 'bin', 'codex.js'));
+  });
   it('returns null when no target found', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shim-'));
     const shim = path.join(dir, 'x.cmd');

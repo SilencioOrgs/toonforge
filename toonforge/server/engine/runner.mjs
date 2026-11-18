@@ -10,14 +10,32 @@ const TAIL_MAX = 8000;
 const IS_WIN = process.platform === 'win32';
 
 /**
- * Pull the node script an npm `.cmd` shim runs.
- * shortcut: regex over the shim text handles npm's standard shim only; upgrade if other shim generators appear.
+ * Pull the node script an npm `.cmd` shim runs: the last quoted token on the last line using `%*`,
+ * with %VAR% expanded from the shim's own SET lines (first assignment wins).
+ * shortcut: handles npm's/Node's standard shims only; ignores conditional overrides (e.g. npx's FOR /F
+ * prefix lookup, which falls back to the default NPX_CLI_JS); upgrade if other shim generators appear.
  * @param {string} shimPath
  * @returns {string|null}
  */
 export function shimTarget(shimPath) {
-  const m = /%(?:~dp0|dp0%)\\?(node_modules\\[^"%\r\n]+?\.[cm]?js)/i.exec(fs.readFileSync(shimPath, 'utf8'));
-  return m ? path.join(path.dirname(shimPath), ...m[1].split('\\')) : null;
+  const dir = path.dirname(shimPath);
+  const lines = fs.readFileSync(shimPath, 'utf8').split(/\r?\n/);
+  const vars = {};
+  for (const l of lines) {
+    const m = /^\s*SET\s+"?([A-Za-z_]\w*)=([^"]*)"?\s*$/i.exec(l);
+    if (m && !(m[1].toUpperCase() in vars)) vars[m[1].toUpperCase()] = m[2];
+  }
+  const line = lines.findLast((l) => l.includes('%*'));
+  const quoted = line?.match(/"[^"]*"/g);
+  if (!quoted) return null;
+  const expand = (t, depth = 0) => t.replace(/%(~dp0|[A-Za-z_]\w*)%?/g, (all, n) => {
+    if (/^~?dp0$/i.test(n)) return dir + path.sep;
+    const v = vars[n.toUpperCase()];
+    return v === undefined || depth > 5 ? all : expand(v, depth + 1);
+  });
+  const target = expand(quoted.at(-1).slice(1, -1));
+  if (target.includes('%') || !/\.[cm]?js$/i.test(target)) return null;
+  return path.normalize(target);
 }
 
 /** First PATH hit for a bare name, honouring PATHEXT. */
