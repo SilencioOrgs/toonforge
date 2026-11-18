@@ -140,7 +140,8 @@ async function subdirs(dir) {
   }
 }
 
-async function listAllFolders(repoRoot) {
+/** Every folder's relPath without reading its toonforge.json. @returns {Promise<{ cat: string, name: string, path: string }[]>} */
+export async function listAllFolders(repoRoot) {
   const out = [];
   for (const cat of await subdirs(shortsDir(repoRoot))) {
     for (const name of await subdirs(path.join(shortsDir(repoRoot), cat))) {

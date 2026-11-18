@@ -6,7 +6,9 @@ import path from 'node:path';
 // @ts-ignore
 import { createFolder, readFolder, updateFolder } from '../../../server/engine/folders.mjs';
 // @ts-ignore
-import { newCard } from '../../../server/engine/cardMachine.mjs';
+import { newCard, retry } from '../../../server/engine/cardMachine.mjs';
+// @ts-ignore
+import { snapshotScene } from '../../../server/engine/media.mjs';
 // @ts-ignore
 import { createBus } from '../../../server/engine/events.mjs';
 // @ts-ignore
@@ -295,7 +297,81 @@ describe('job queue', () => {
     for (const s of ['a', 'b', 'c']) ids.push((await q.enqueueCard(REL, (await addCard(s)).id)).id);
     q.reorder([ids[2], ids[0]]);
     expect(q.snapshot().queued.map((j: any) => j.id)).toEqual([ids[2], ids[0], ids[1]]);
-    q.remove(ids[0]);
+    await q.remove(ids[0]);
     expect(q.snapshot().queued.map((j: any) => j.id)).toEqual([ids[2], ids[1]]);
+  });
+
+  it('removing a card job fails the card; removing a topics job just drops it', async () => {
+    makeQueue(fakeAgent());
+    q.setPaused(true);
+    const card = await addCard('a');
+    const job = await q.enqueueCard(REL, card.id);
+    const changed = next('folder.changed');
+    await q.remove(job.id);
+    expect((await changed).path).toBe(REL);
+    expect(await cardOf(card.id)).toMatchObject({ state: 'failed', failedStep: 'script', error: 'Removed from queue' });
+    const topics = await q.enqueueTopics(REL, { count: 3, source: 'made_up' });
+    await q.remove(topics.id);
+    expect(q.snapshot().queued).toEqual([]);
+    expect((await readFolder(tmp, REL)).topicRun).toBeNull();
+  });
+
+  it('a retried revision does not overwrite the pre-revision snapshot', async () => {
+    const scene = path.join(tmp, 'src/videos/r');
+    await fs.mkdir(scene, { recursive: true });
+    await fs.writeFile(path.join(scene, 'story.ts'), 'original');
+    // The agent half-edits the scene, then fails.
+    const agent = fakeAgent(async () => {
+      await fs.writeFile(path.join(scene, 'story.ts'), 'half-edited');
+      return { ok: false, events: [{ type: 'done', ok: false, text: 'crashed' }], tail: '' };
+    });
+    makeQueue(agent, { ...fakeMedia(), snapshotScene });
+    const card = await addCard('r', {
+      state: 'scene',
+      notes: [{ at: 'x', text: 'bigger hero', previewVersion: 1 }],
+      files: { previews: ['out/r/preview-v1.mp4'], stills: [] },
+    });
+    for (let run = 1; run <= 2; run++) {
+      const done = next('job.finished');
+      await q.enqueueCard(REL, card.id);
+      expect((await done).ok).toBe(false);
+      await updateFolder(tmp, REL, (f: any) => { f.cards = f.cards.map((c: any) => (c.id === card.id ? retry(c) : c)); });
+    }
+    expect(agent.calls).toHaveLength(2);
+    expect(await fs.readFile(path.join(tmp, 'out/r/versions/v2/scene/story.ts'), 'utf8')).toBe('original');
+  });
+
+  it('a crash outside a job step does not stop the queue', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const real = bus;
+    let thrown = false;
+    bus = { ...real, emit(type: string, p: any) { if (type === 'job.started' && !thrown) { thrown = true; throw new Error('boom'); } real.emit(type, p); } };
+    const agent = fakeAgent();
+    makeQueue(agent);
+    bus = real;
+    const x = await addCard('x');
+    const y = await addCard('y');
+    q.setPaused(true);
+    await q.enqueueCard(REL, x.id);
+    await q.enqueueCard(REL, y.id);
+    const done = next('job.finished');
+    q.setPaused(false);
+    expect(await done).toMatchObject({ ok: false, error: 'boom' });
+    expect((await agent.called(1)).prompt).toContain('T y');
+    expect(q.snapshot().running.cardId).toBe(y.id);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('start skips a corrupt folder and still recovers the others', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await fs.mkdir(path.join(tmp, 'shorts/horror/Bad'), { recursive: true });
+    await fs.writeFile(path.join(tmp, 'shorts/horror/Bad/toonforge.json'), '{ not json');
+    makeQueue(fakeAgent());
+    const card = await addCard('i', { state: 'sound' });
+    await expect(q.start()).resolves.toBeUndefined();
+    expect(await cardOf(card.id)).toMatchObject({ state: 'failed', error: 'Interrupted when ToonForge closed' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('shorts/horror/Bad'), expect.anything());
+    warn.mockRestore();
   });
 });

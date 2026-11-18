@@ -78,9 +78,12 @@ export async function makeWords(repoRoot, voiceRelPath, outRelPath, opts) {
   return { ok: r.code === 0, tail: r.tail };
 }
 
-/** Copy src/videos/<slug>/ to out/<slug>/versions/v<version>/scene/; no-op if the scene is missing. */
+/** Copy src/videos/<slug>/ to out/<slug>/versions/v<version>/scene/; no-op if the scene is missing or v<version> was already taken. */
 export async function snapshotScene(repoRoot, slug, version) {
   const src = path.join(repoRoot, 'src', 'videos', slug);
+  const dest = path.join(repoRoot, 'out', slug, 'versions', `v${version}`, 'scene');
   try { await fs.access(src); } catch { return; }
-  await fs.cp(src, path.join(repoRoot, 'out', slug, 'versions', `v${version}`, 'scene'), { recursive: true });
+  // A retried revision must not copy its half-edited scene over the only pre-revision copy.
+  try { await fs.access(dest); return; } catch { /* not taken yet */ }
+  await fs.cp(src, dest, { recursive: true });
 }

@@ -31,6 +31,9 @@ describe('engine media', () => {
     await snapshotScene(root, 'a', 3);
     expect(await fs.readFile(path.join(root, 'out/a/versions/v3/scene/x.ts'), 'utf8')).toBe('hi');
     expect(await fs.readFile(path.join(root, 'src/videos/a/x.ts'), 'utf8')).toBe('hi');
+    await fs.writeFile(path.join(root, 'src/videos/a/x.ts'), 'edited');
+    await snapshotScene(root, 'a', 3);
+    expect(await fs.readFile(path.join(root, 'out/a/versions/v3/scene/x.ts'), 'utf8')).toBe('hi');
     await snapshotScene(root, 'missing', 1);
     await fs.rm(root, { recursive: true, force: true });
   });

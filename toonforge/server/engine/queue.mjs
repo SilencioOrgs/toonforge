@@ -220,24 +220,37 @@ export function createQueue({ repoRoot, bus, store = folders, agents = { runAgen
 
   async function loop() {
     looping = true;
-    while (!paused && queued.length) {
-      const job = /** @type {Job} */ (queued.shift());
-      running = job;
-      job.startedAt = iso();
-      changed();
-      bus.emit('job.started', { job: { ...job } });
-      const work = runJob(job);
-      current = work.then(() => {});
-      const error = await work;
-      running = null;
-      abort = null;
-      bus.emit('job.finished', { job: { ...job }, ok: !error, ...(error ? { error } : {}) });
-      if (job.cardId) await enqueueCard(job.folderPath, job.cardId).catch(() => null);
-      changed();
+    try {
+      while (!paused && queued.length) {
+        const job = /** @type {Job} */ (queued.shift());
+        let error = null;
+        try {
+          running = job;
+          job.startedAt = iso();
+          changed();
+          bus.emit('job.started', { job: { ...job } });
+          const work = runJob(job);
+          current = work.then(() => {});
+          error = await work;
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+          console.error('[queue] job crashed outside its step:', e);
+        }
+        running = null;
+        abort = null;
+        try {
+          bus.emit('job.finished', { job: { ...job }, ok: !error, ...(error ? { error } : {}) });
+          if (job.cardId) await enqueueCard(job.folderPath, job.cardId);
+          changed();
+        } catch (e) {
+          console.error('[queue] after-job step failed:', e);
+        }
+      }
+    } finally {
+      looping = false;
     }
-    looping = false;
   }
-  const kick = () => { if (!looping) loop(); };
+  const kick = () => { if (!looping) loop().catch((e) => console.error('[queue] loop failed:', e)); };
 
   /** @param {Job} job */
   function insert(job) {
@@ -273,15 +286,17 @@ export function createQueue({ repoRoot, bus, store = folders, agents = { runAgen
 
     /** Fail cards left in running states by a previous session, then queue whatever is ready (e.g. word timings). */
     async start() {
-      const { categories } = await store.listTree(repoRoot);
-      for (const { path: rel } of categories.flatMap((c) => c.folders)) {
+      for (const { path: rel } of await store.listAllFolders(repoRoot)) {
         try {
           const folder = await store.readFolder(repoRoot, rel);
           if (folder.cards.some((c) => markInterrupted(c) !== c)) {
             await saveFolder(rel, (f) => { f.cards = f.cards.map(markInterrupted); });
           }
           for (const c of folder.cards) await enqueueCard(rel, c.id);
-        } catch { /* one unreadable folder must not block recovery of the others */ }
+        } catch (e) {
+          // One unreadable folder must not block recovery of the others.
+          console.warn(`[queue] skipped unreadable folder ${rel}:`, e instanceof Error ? e.message : e);
+        }
       }
       kick();
     },
@@ -307,10 +322,16 @@ export function createQueue({ repoRoot, bus, store = folders, agents = { runAgen
       changed();
     },
 
-    /** @param {string} jobId */
-    remove(jobId) {
-      queued = queued.filter((j) => j.id !== jobId);
+    /** Drop a queued job; a card job's card becomes failed so the UI offers Retry. @param {string} jobId */
+    async remove(jobId) {
+      const job = queued.find((j) => j.id === jobId);
+      if (!job) return;
+      queued = queued.filter((j) => j !== job);
       changed();
+      if (!job.cardId) return;
+      await saveFolder(job.folderPath, (f) => {
+        f.cards = f.cards.map((c) => (c.id === job.cardId ? failJob(c, job.kind, 'Removed from queue') : c));
+      });
     },
   };
 }
