@@ -59,7 +59,7 @@ describe('importBoardOnce', () => {
     expect(cards.map((c: any) => [c.slug, c.state, c.imported])).toEqual([
       ['done1', 'done', true], ['vo1', 'voice', true], ['needs1', 'voice', true],
     ]);
-    const [done, vo, needs] = cards;
+    const [done, vo, needs] = cards as any[];
     expect(done.files).toMatchObject({ final: 'out/done1/done1.mp4', qa: 'out/done1/qa/report.md', previews: ['out/done1/done1.mp4'] });
     expect(vo.files.voice).toBe('voice/vo1_voice.mp3');
     expect(nextJob(vo)).toBeNull();
