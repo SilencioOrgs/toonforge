@@ -4,13 +4,22 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-ignore
+import * as folders from '../../../server/engine/folders.mjs';
+// @ts-ignore
 import { importBoardOnce } from '../../../server/engine/migrate.mjs';
 // @ts-ignore
 import { readFolder } from '../../../server/engine/folders.mjs';
 // @ts-ignore
+import { nextJob } from '../../../server/engine/cardMachine.mjs';
+// @ts-ignore
 import { createBus } from '../../../server/engine/events.mjs';
 // @ts-ignore
 import { createQueue } from '../../../server/engine/queue.mjs';
+
+vi.mock('../../../server/engine/folders.mjs', async (orig) => {
+  const m: any = await orig();
+  return { ...m, updateFolder: vi.fn(m.updateFolder) };
+});
 
 const REL = 'shorts/_imported/Existing shorts';
 let tmp: string;
@@ -48,11 +57,13 @@ describe('importBoardOnce', () => {
 
     const cards = (await readFolder(tmp, REL)).cards;
     expect(cards.map((c: any) => [c.slug, c.state, c.imported])).toEqual([
-      ['done1', 'done', true], ['vo1', 'scene', true], ['needs1', 'voice', true],
+      ['done1', 'done', true], ['vo1', 'voice', true], ['needs1', 'voice', true],
     ]);
     const [done, vo, needs] = cards;
     expect(done.files).toMatchObject({ final: 'out/done1/done1.mp4', qa: 'out/done1/qa/report.md', previews: ['out/done1/done1.mp4'] });
     expect(vo.files.voice).toBe('voice/vo1_voice.mp3');
+    expect(nextJob(vo)).toBeNull();
+    expect(nextJob({ ...vo, resumed: true })).toBe('words');
     expect(needs).toMatchObject({ audio: 'vo', rig: 'stickman', compId: 'Needs1Short', title: 'Needs VO' });
     expect(needs.files.script).toBe('SCRIPT_NEEDS1.md');
   });
@@ -67,8 +78,31 @@ describe('importBoardOnce', () => {
     const runAgent = vi.fn(async () => ({ ok: true, events: [], tail: '' }));
     const q = createQueue({ repoRoot: tmp, bus: createBus(), agents: { runAgent } } as any);
     await q.start();
-    expect((await readFolder(tmp, REL)).cards.map((c: any) => c.state)).toEqual(['done', 'scene', 'voice']);
+    expect((await readFolder(tmp, REL)).cards.map((c: any) => c.state)).toEqual(['done', 'voice', 'voice']);
     expect(q.snapshot().queued ?? []).toHaveLength(0);
     expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it('leaves no guard folder behind when the write fails, and retries cleanly', async () => {
+    (folders.updateFolder as any).mockRejectedValueOnce(new Error('disk'));
+    await expect(importBoardOnce(tmp)).rejects.toThrow('disk');
+    await expect(fs.access(path.join(tmp, REL, 'toonforge.json'))).rejects.toThrow();
+    expect(await importBoardOnce(tmp)).toEqual({ imported: 3 });
+  });
+
+  it('concurrent calls import once', async () => {
+    const r = await Promise.all([importBoardOnce(tmp), importBoardOnce(tmp)]);
+    expect(r).toEqual([{ imported: 3 }, { imported: 3 }]);
+    expect(await fs.readdir(path.join(tmp, 'shorts', '_imported'))).toEqual(['Existing shorts']);
+    expect((await readFolder(tmp, REL)).cards).toHaveLength(3);
+  });
+
+  it('gives slugless cards with the same title distinct slugs', async () => {
+    await write('.toonforge/board.json', JSON.stringify({
+      version: 1, cards: [1, 2].map((i) => ({ id: `n${i}`, slug: '', title: 'Same Title', audioMode: 'needs_vo', rigMode: 'chibi' })),
+    }));
+    await importBoardOnce(tmp);
+    const slugs = (await readFolder(tmp, REL)).cards.map((c: any) => c.slug);
+    expect(new Set(slugs).size).toBe(2);
   });
 });
