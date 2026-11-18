@@ -22,7 +22,7 @@ describe('prompts', () => {
 
   it('topicsPrompt falls back without web search', () => {
     const s = p.topicsPrompt({ category: 'c', count: 3, source: 'real', exclude: ['Old One'], canSearchWeb: false });
-    expect(s).toContain('made up');
+    expect(s).toContain('Web access is unavailable, so make the stories up');
     expect(s).not.toContain('search the web');
     expect(s).toContain('Old One');
     expect(p.topicsPrompt({ category: 'c', count: 3, source: 'real', exclude: [], canSearchWeb: true })).toContain('search the web');
@@ -44,6 +44,8 @@ describe('prompts', () => {
     expect(p.parseTopics(t, 10, [])).toEqual([{ title: 'A', hook: 'h' }, { title: 'B', hook: '' }]);
     expect(p.parseTopics('[{"title":"Kept"},{"title":"New"}]', 5, ['kept'])).toEqual([{ title: 'New', hook: '' }]);
     expect(p.parseTopics('x [{"title":"P"}] y', 5, [])).toEqual([{ title: 'P', hook: '' }]);
+    expect(p.parseTopics('Here are [3] ideas:\n[{"title":"Q","hook":"h"}]', 5, [])).toEqual([{ title: 'Q', hook: 'h' }]);
+    expect(p.parseTopics('[{"title":"R"}]\n(see [1])', 5, [])).toEqual([{ title: 'R', hook: '' }]);
     expect(p.parseTopics('[{"title":"1"},{"title":"2"}]', 1, [])).toHaveLength(1);
     expect(() => p.parseTopics('no list here', 3, [])).toThrow('Agent did not return a topic list');
   });

@@ -11,7 +11,7 @@ export function topicsPrompt({ category, count, source, exclude, canSearchWeb })
   const how = real && canSearchWeb
     ? 'search the web for true stories with a physical cause and effect'
     : real
-      ? 'Web access is unavailable, so use true stories you already know; if unsure they are true, make them up (made up is fine) and keep them plausible'
+      ? 'Web access is unavailable, so make the stories up (made up, but with a physical cause and effect and an everyday analogy)'
       : 'Make up the stories (made up, but with a physical cause and effect)';
   const ex = exclude.length ? `\nDo not repeat these titles:\n${exclude.map((t) => `- ${t}`).join('\n')}` : '';
   return `${SKILL}
@@ -64,15 +64,16 @@ ${stillPaths.map((p) => `- ${p}`).join('\n')}`;
 
 /** @param {string} text @param {number} count @param {string[]} exclude @returns {Topic[]} */
 export function parseTopics(text, count, exclude) {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1];
-  const candidates = [text, fenced, /\[[\s\S]*\]/.exec(text)?.[0]];
   let arr = null;
-  for (const c of candidates) {
-    if (!c) continue;
-    try {
-      const v = JSON.parse(c.trim());
-      if (Array.isArray(v)) { arr = v; break; }
-    } catch { /* try next */ }
+  const tryParse = (c) => {
+    try { const v = JSON.parse(c.trim()); if (Array.isArray(v) && v.some((x) => typeof x?.title === "string")) arr = v; } catch { /* not JSON */ }
+  };
+  tryParse(text);
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1];
+  if (!arr && fenced) tryParse(fenced);
+  // shortcut: O(n^2) scan of '[' x ']' spans, fine for agent replies; first span that parses to an array wins
+  for (let i = text.indexOf('['); !arr && i !== -1; i = text.indexOf('[', i + 1)) {
+    for (let j = text.indexOf(']', i); !arr && j !== -1; j = text.indexOf(']', j + 1)) tryParse(text.slice(i, j + 1));
   }
   const seen = new Set(exclude.map((e) => e.trim().toLowerCase()));
   const out = [];
