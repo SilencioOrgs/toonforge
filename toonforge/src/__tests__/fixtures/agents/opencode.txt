@@ -1,0 +1,3 @@
+Creating hello.txt with the text hi.
+I created hello.txt containing hi.
+DONE
