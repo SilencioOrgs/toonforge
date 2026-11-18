@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileExists } from '../services/workspaceService.mjs';
+import { importBoardOnce } from './migrate.mjs';
 import * as folders from './folders.mjs';
 import * as realMedia from './media.mjs';
 import { runAgent } from './runner.mjs';
@@ -286,6 +287,11 @@ export function createQueue({ repoRoot, bus, store = folders, agents = { runAgen
 
     /** Fail cards left in running states by a previous session, then queue whatever is ready (e.g. word timings). */
     async start() {
+      try {
+        await importBoardOnce(repoRoot);
+      } catch (e) {
+        console.warn('[queue] board import failed:', e instanceof Error ? e.message : e);
+      }
       for (const { path: rel } of await store.listAllFolders(repoRoot)) {
         try {
           const folder = await store.readFolder(repoRoot, rel);

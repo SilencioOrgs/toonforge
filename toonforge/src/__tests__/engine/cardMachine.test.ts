@@ -115,4 +115,11 @@ describe('cardMachine', () => {
     expect(m.nextJob(c)).toBeNull();
     expect(m.nextJob({ ...c, resumed: true })).toBe('script');
   });
+
+  it('markInterrupted leaves an unresumed imported card alone', () => {
+    const c = { ...visual(), state: 'scene', imported: true };
+    expect(m.markInterrupted(c)).toBe(c);
+    const r = { ...c, resumed: true };
+    expect(m.markInterrupted(r).state).toBe('failed');
+  });
 });

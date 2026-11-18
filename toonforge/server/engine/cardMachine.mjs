@@ -84,5 +84,6 @@ export function attachVoice(card, relPath) {
 
 /** @param {Card} card @returns {Card} */
 export function markInterrupted(card) {
+  if (card.imported && !card.resumed) return card; // waits for Resume
   return RUNNING.includes(card.state) ? failJob(card, card.state, 'Interrupted when ToonForge closed') : card;
 }
